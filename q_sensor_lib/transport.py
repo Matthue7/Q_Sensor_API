@@ -84,6 +84,9 @@ class Transport:
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
                 timeout=timeout_s,
+                rtscts=False,
+                dsrdtr=False,
+                xonxoff=False
             )
             logger.info(f"Opened serial port {port} at {baud} baud, timeout={timeout_s}s")
             return cls(ser)
