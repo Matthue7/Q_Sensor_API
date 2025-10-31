@@ -81,6 +81,13 @@ def make_polled_query_cmd(tag: str) -> str:
 # Timing Constants (seconds)
 # ============================================================================
 
+# API-readiness timing constants (hardware-validated)
+DELAY_POST_OPEN: Final[float] = 1.2  # Wait for power-on banner before sending ESC
+DELAY_POST_RESET: Final[float] = 1.5  # Wait after 'X' command for device reboot
+TIMEOUT_MENU_PROMPT: Final[float] = 3.0  # Timeout for menu prompt appearance
+TIMEOUT_READ_LINE: Final[float] = 0.5  # Serial readline timeout (increased for robustness)
+POLL_INTERVAL_MIN: Final[float] = 0.1  # Minimum polled mode query interval (untested limit)
+
 # Delay before menu displays after entry (DelayMS 1000 at line 1092)
 MENU_DISPLAY_DELAY: Final[float] = 1.0
 
@@ -111,7 +118,7 @@ ERROR_DELAY_ADC_CONFIG: Final[float] = 3.0
 
 # Menu entry prompt (appears after ESC/? and after each menu command)
 RE_MENU_PROMPT: Final[re.Pattern[str]] = re.compile(
-    r"Select the letter of the menu entry:", re.IGNORECASE
+    r"^Select the letter of the menu entry:\s*$", re.IGNORECASE
 )
 
 # Signon banner contains version

@@ -31,14 +31,14 @@ class SensorController:
     def __init__(
         self,
         transport: Optional[Transport] = None,
-        buffer_size: int = 1000,
+        buffer_size: int = 10000,
     ) -> None:
         """Initialize controller.
 
         Args:
             transport: Optional pre-configured Transport instance.
                       If None, must call connect() to create one.
-            buffer_size: Maximum number of readings to buffer. Default 1000.
+            buffer_size: Maximum number of readings to buffer. Default 10000.
         """
         self._transport = transport
         self._state = ConnectionState.DISCONNECTED
@@ -54,6 +54,14 @@ class SensorController:
 
         # Lock for state transitions
         self._state_lock = threading.Lock()
+
+        # Store connection params for reconnection
+        self._last_port: Optional[str] = None
+        self._last_baud: int = 9600
+
+        # Store state before pause for resume
+        self._paused_from_state: Optional[ConnectionState] = None
+        self._last_poll_hz: float = 1.0  # Default poll rate for resume
 
     # ========================================================================
     # Connection Management
@@ -91,6 +99,9 @@ class SensorController:
                     self._transport = Transport(serial_port)
                 elif port is not None:
                     self._transport = Transport.open(port, baud)
+                    # Store for reconnection
+                    self._last_port = port
+                    self._last_baud = baud
                 else:
                     raise ValueError("Must provide either 'port' or 'serial_port'")
 
@@ -206,7 +217,8 @@ class SensorController:
                     self._config.averaging = actual
 
                 # Wait for menu prompt to return
-                self._wait_for_menu_prompt(timeout=3.0)
+                if not self._wait_for_menu_prompt(timeout=protocol.TIMEOUT_MENU_PROMPT):
+                    raise MenuTimeout("Menu did not re-appear after averaging change")
                 return self.get_config()
 
         raise MenuTimeout("Timeout waiting for averaging confirmation")
@@ -266,7 +278,8 @@ class SensorController:
                     self._config.adc_rate_hz = actual
 
                 # Wait for menu prompt
-                self._wait_for_menu_prompt(timeout=3.0)
+                if not self._wait_for_menu_prompt(timeout=protocol.TIMEOUT_MENU_PROMPT):
+                    raise MenuTimeout("Menu did not re-appear after rate change")
                 return self.get_config()
 
         raise MenuTimeout("Timeout waiting for rate confirmation")
@@ -336,7 +349,8 @@ class SensorController:
             self._config.tag = tag
 
         # Wait for menu prompt
-        self._wait_for_menu_prompt(timeout=3.0)
+        if not self._wait_for_menu_prompt(timeout=protocol.TIMEOUT_MENU_PROMPT):
+            raise MenuTimeout("Menu did not re-appear after mode change")
 
         logger.info(f"Mode set to {mode}" + (f" with tag {tag}" if tag else ""))
         return self.get_config()
@@ -359,10 +373,14 @@ class SensorController:
             poll_hz: Polling rate for polled mode (1-15 Hz recommended). Ignored in freerun.
 
         Raises:
-            SerialIOError: If not in CONFIG_MENU state
+            SerialIOError: If not in CONFIG_MENU state or already acquiring
             DeviceResetError: If device reset behavior is unexpected
         """
         self._ensure_in_menu()
+
+        # Micro-fix #5: Use state instead of thread liveness for "already running" check
+        if self._state in (ConnectionState.ACQ_FREERUN, ConnectionState.ACQ_POLLED):
+            raise SerialIOError("Acquisition already running")
 
         config = self.get_config()
         logger.info(f"Starting acquisition in {config.mode} mode...")
@@ -372,13 +390,9 @@ class SensorController:
         # Send 'X' to exit menu (triggers device reset)
         self._transport.write_cmd(protocol.MENU_CMD_EXIT)
 
-        # Wait for "Rebooting program" message
-        if not self._wait_for_prompt(protocol.RE_REBOOTING, timeout=3.0):
-            raise DeviceResetError("Did not receive 'Rebooting program' message after X command")
-
-        # Device resets - wait for banner to complete
-        logger.debug("Device resetting, waiting for banner...")
-        time.sleep(protocol.BANNER_SETTLE_TIME)
+        # Critical Fix #2: Wait for device to reboot before flushing
+        logger.debug("Device resetting, waiting for reboot...")
+        time.sleep(protocol.DELAY_POST_RESET)
 
         # Flush banner from input buffer
         self._transport.flush_input()
@@ -390,15 +404,17 @@ class SensorController:
                 self._start_freerun_thread()
             elif config.mode == "polled":
                 self._state = ConnectionState.ACQ_POLLED
+                # Store poll_hz for resume
+                self._last_poll_hz = poll_hz
                 self._start_polled_thread(config.tag or "A", poll_hz)
 
         logger.info(f"Acquisition started in {config.mode} mode")
 
     def pause(self) -> None:
-        """Pause acquisition and enter menu (from freerun mode).
+        """Pause acquisition and enter menu (from freerun or polled mode).
 
         Stops reader thread, sends ESC to enter menu, and transitions to PAUSED state.
-        Call resume() to restart acquisition.
+        Call resume() to restart acquisition in the same mode.
 
         Raises:
             SerialIOError: If not in acquisition mode
@@ -411,6 +427,9 @@ class SensorController:
 
             logger.info("Pausing acquisition...")
 
+            # Critical Fix #4: Record state before pausing for resume
+            self._paused_from_state = self._state
+
             # Stop acquisition thread
             self._stop_acquisition_thread()
 
@@ -419,12 +438,13 @@ class SensorController:
             self._enter_menu()
 
             self._state = ConnectionState.PAUSED
-            logger.info("Acquisition paused, in menu")
+            logger.info(f"Acquisition paused (was {self._paused_from_state.value}), in menu")
 
     def resume(self) -> None:
         """Resume acquisition from paused state.
 
-        Exits menu with 'X', handles reset, and restarts acquisition threads.
+        Exits menu with 'X', handles reset, and restarts acquisition threads
+        in the same mode (freerun or polled) that was active before pause.
 
         Raises:
             SerialIOError: If not in PAUSED state
@@ -434,14 +454,44 @@ class SensorController:
                 f"Cannot resume from state {self._state.value}. Must be PAUSED."
             )
 
-        logger.info("Resuming acquisition...")
+        # Critical Fix #4: Check we have a saved state
+        if self._paused_from_state is None:
+            raise SerialIOError("Cannot resume: no saved state from pause")
 
-        # Re-read config to get current mode
+        logger.info(f"Resuming acquisition (restoring {self._paused_from_state.value})...")
+
+        # Re-read config to get current mode and parameters
         config = self._read_config_snapshot()
         self._config = config
 
-        # Exit menu and restart acquisition
-        self.start_acquisition()
+        # Exit menu with 'X' (triggers device reset)
+        assert self._transport is not None
+        self._transport.write_cmd(protocol.MENU_CMD_EXIT)
+
+        # Wait for device to reboot
+        logger.debug("Device resetting, waiting for reboot...")
+        time.sleep(protocol.DELAY_POST_RESET)
+
+        # Flush banner from input buffer
+        self._transport.flush_input()
+
+        # Restart appropriate reader thread based on saved mode
+        if self._paused_from_state == ConnectionState.ACQ_FREERUN:
+            self._start_freerun_thread()
+            self._state = ConnectionState.ACQ_FREERUN
+            logger.info("Resumed freerun acquisition")
+        elif self._paused_from_state == ConnectionState.ACQ_POLLED:
+            # Use same poll rate as before (default 1 Hz if not stored)
+            poll_hz = getattr(self, '_last_poll_hz', 1.0)
+            tag = config.tag or "A"
+            self._start_polled_thread(tag, poll_hz)
+            self._state = ConnectionState.ACQ_POLLED
+            logger.info(f"Resumed polled acquisition at {poll_hz} Hz")
+        else:
+            raise SerialIOError(f"Cannot resume from saved state {self._paused_from_state.value}")
+
+        # Clear saved state
+        self._paused_from_state = None
 
     def stop(self) -> None:
         """Stop acquisition and return to CONFIG_MENU state.
@@ -467,12 +517,14 @@ class SensorController:
             # Stop threads if running
             self._stop_acquisition_thread()
 
-            # If not already in menu, enter it
-            if self._state != ConnectionState.PAUSED:
-                assert self._transport is not None
-                self._enter_menu()
+            # Critical Fix #3: Always enter menu after stopping
+            # (even if paused, re-enter menu to ensure clean state)
+            assert self._transport is not None
+            self._enter_menu()
 
             self._state = ConnectionState.CONFIG_MENU
+            # Clear saved pause state
+            self._paused_from_state = None
             logger.info("Acquisition stopped, in menu")
 
     # ========================================================================
@@ -493,6 +545,17 @@ class SensorController:
         """Clear all buffered readings."""
         self._buffer.clear()
 
+    def read_latest(self) -> Optional[Reading]:
+        """Get the most recent reading from buffer.
+
+        Thread-safe. Returns None if buffer is empty.
+
+        Returns:
+            Latest Reading instance or None
+        """
+        snapshot = self._buffer.snapshot()
+        return snapshot[-1] if snapshot else None
+
     @property
     def state(self) -> ConnectionState:
         """Current connection state."""
@@ -502,6 +565,39 @@ class SensorController:
     def sensor_id(self) -> str:
         """Sensor serial number/ID."""
         return self._sensor_id
+
+    def is_connected(self) -> bool:
+        """Check if controller is connected to sensor.
+
+        Returns:
+            True if transport is open and state is not DISCONNECTED
+        """
+        return (
+            self._transport is not None
+            and self._transport.is_open
+            and self._state != ConnectionState.DISCONNECTED
+        )
+
+    def reconnect(self) -> None:
+        """Reconnect to sensor using last known port/baud.
+
+        Disconnects current session if connected, then reconnects with
+        stored connection parameters.
+
+        Raises:
+            SerialIOError: If no previous connection exists or reconnection fails
+        """
+        if self._last_port is None:
+            raise SerialIOError("Cannot reconnect: no previous connection")
+
+        logger.info(f"Reconnecting to {self._last_port} at {self._last_baud} baud...")
+
+        # Disconnect if currently connected
+        if self.is_connected():
+            self.disconnect()
+
+        # Reconnect with stored parameters
+        self.connect(port=self._last_port, baud=self._last_baud)
 
     # ========================================================================
     # Internal Helpers: Menu Operations
@@ -520,8 +616,7 @@ class SensorController:
 
         # Wait for power-on banner to complete (sensor outputs ~11 lines on startup)
         # If we send ESC while banner is printing, sensor ignores it
-        import time
-        time.sleep(1.2)
+        time.sleep(protocol.DELAY_POST_OPEN)
 
         # Flush any pending input (discard power-on banner)
         self._transport.flush_input()
@@ -530,7 +625,7 @@ class SensorController:
         self._transport.write_bytes(protocol.ESC)
 
         # Wait for menu prompt
-        if not self._wait_for_menu_prompt(timeout=5.0):
+        if not self._wait_for_menu_prompt(timeout=protocol.TIMEOUT_MENU_PROMPT):
             raise MenuTimeout("Did not receive menu prompt after ESC")
 
         logger.debug("Entered config menu")
@@ -625,16 +720,22 @@ class SensorController:
     def _start_polled_thread(self, tag: str, poll_hz: float) -> None:
         """Start background thread to poll at specified rate.
 
+        Protocol assumptions (require hardware verification):
+        - Init command format: `*<TAG>Q000!` with CR terminator (e.g., `*AQ000!\r`)
+        - Device acknowledges init (or silently accepts - verify on hardware)
+        - After init, device responds to `><TAG>` queries
+
         Args:
             tag: TAG character for queries
             poll_hz: Polling frequency in Hz
         """
         assert self._transport is not None
 
-        # Send polled init command: *<TAG>Q000!
+        # Critical Fix #5: Send polled init command with CR terminator
+        # write_cmd() adds CR automatically per protocol spec
         init_cmd = protocol.make_polled_init_cmd(tag)
         self._transport.write_cmd(init_cmd)
-        logger.debug(f"Sent polled init command: {init_cmd}")
+        logger.debug(f"Sent polled init command: {init_cmd} (with CR)")
 
         # Wait for averaging to fill
         if self._config:
@@ -670,7 +771,7 @@ class SensorController:
 
         Continuously reads lines, parses as freerun data, and appends to buffer.
         """
-        logger.info("Freerun reader loop started")
+        logger.info(f"Freerun reader loop started (thread {threading.get_ident()})")
         assert self._transport is not None
 
         while not self._stop_event.is_set():
@@ -707,11 +808,17 @@ class SensorController:
 
         Sends query command at poll_hz rate, reads response, parses, and buffers.
 
+        Protocol assumptions (require hardware verification):
+        - Query command format: `><TAG>` (e.g., `>A`) with CR terminator
+        - Response format: `<TAG><value>[,TempC][,Vin]` with CRLF terminator
+        - TAG validation: Response TAG must match query TAG (strict check)
+        - Timing: Device responds within readline timeout (default 0.5s)
+
         Args:
             tag: TAG character for queries
             poll_hz: Polling frequency in Hz
         """
-        logger.info(f"Polled reader loop started at {poll_hz} Hz")
+        logger.info(f"Polled reader loop started (thread {threading.get_ident()}) at {poll_hz} Hz")
         assert self._transport is not None
 
         poll_period = 1.0 / poll_hz
@@ -728,10 +835,12 @@ class SensorController:
                 line = self._transport.readline()
                 if not line:
                     logger.warning("No response to polled query, will retry")
-                    time.sleep(poll_period)
+                    # Micro-fix #4: Use Event.wait for cancellable sleep
+                    if self._stop_event.wait(timeout=poll_period):
+                        break  # Stop event set during sleep
                     continue
 
-                # Parse polled line
+                # Parse polled line (Critical Fix #5: TAG validation already in parsing.py)
                 try:
                     data = parsing.parse_polled_line(line, tag)
                     reading = Reading(
@@ -749,10 +858,11 @@ class SensorController:
             except Exception as e:
                 logger.error(f"Error in polled reader loop: {e}", exc_info=True)
 
-            # Sleep to maintain poll rate
+            # Micro-fix #4: Use Event.wait for cancellable sleep
             elapsed = time.time() - cycle_start
             sleep_time = max(0, poll_period - elapsed)
             if sleep_time > 0:
-                time.sleep(sleep_time)
+                if self._stop_event.wait(timeout=sleep_time):
+                    break  # Stop event set during sleep
 
         logger.info("Polled reader loop stopped")

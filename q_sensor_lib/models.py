@@ -97,3 +97,18 @@ class Reading:
         """Validate reading data."""
         if "value" not in self.data:
             raise ValueError("Reading data must contain 'value' key")
+
+    def to_dict(self) -> Dict[str, any]:
+        """Convert reading to dictionary with ISO timestamp for API responses.
+
+        Returns:
+            Dictionary with keys: timestamp (ISO 8601), sensor_id, mode, and all data fields
+        """
+        result = {
+            "timestamp": self.ts.isoformat(),
+            "sensor_id": self.sensor_id,
+            "mode": self.mode,
+        }
+        # Flatten data fields into top level
+        result.update(self.data)
+        return result

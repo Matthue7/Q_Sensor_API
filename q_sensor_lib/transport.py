@@ -60,14 +60,14 @@ class Transport:
 
     @classmethod
     def open(
-        cls, port: str, baud: int = 9600, timeout_s: float = 0.2
+        cls, port: str, baud: int = 9600, timeout_s: float = 0.5
     ) -> "Transport":
         """Open a real serial port (requires pyserial).
 
         Args:
             port: Serial port device name (e.g., "/dev/ttyUSB0")
             baud: Baud rate. Default 9600 matches typical Q-Series config.
-            timeout_s: Read timeout in seconds. Default 0.2s for responsive UI.
+            timeout_s: Read timeout in seconds. Default 0.5s (increased for robustness).
 
         Returns:
             Transport instance wrapping opened serial port
@@ -123,7 +123,7 @@ class Transport:
         try:
             sent = self._port.write(data)
             self._port.flush()  # Force immediate transmission
-            logger.debug(f"Sent {sent} bytes: {data!r}")
+            logger.debug(f"Sent {sent} bytes: {data!r} (hex: {data.hex(' ')})")
         except Exception as e:
             raise SerialIOError(f"Failed to write to port: {e}") from e
 
