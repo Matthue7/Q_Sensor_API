@@ -518,6 +518,14 @@ class SensorController:
         """Force entry into config menu by sending ESC and waiting for prompt."""
         assert self._transport is not None
 
+        # Wait for power-on banner to complete (sensor outputs ~11 lines on startup)
+        # If we send ESC while banner is printing, sensor ignores it
+        import time
+        time.sleep(1.2)
+
+        # Flush any pending input (discard power-on banner)
+        self._transport.flush_input()
+
         # Send ESC to enter menu
         self._transport.write_bytes(protocol.ESC)
 
