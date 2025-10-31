@@ -154,7 +154,7 @@ RE_AVERAGING_PROMPT: Final[re.Pattern[str]] = re.compile(
 
 # Rate prompt
 RE_RATE_PROMPT: Final[re.Pattern[str]] = re.compile(
-    r"Enter ADC rate.*:", re.IGNORECASE | re.DOTALL
+    r"Enter ADC rate", re.IGNORECASE | re.DOTALL
 )
 
 # Mode prompt
