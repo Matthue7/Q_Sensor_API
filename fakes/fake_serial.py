@@ -123,6 +123,12 @@ class FakeSerial:
         except queue.Empty:
             return b""
 
+    def flush(self) -> None:
+        """Flush output buffer (no-op for fake serial)."""
+        # In real serial, this forces transmission
+        # For fake serial, writes are immediate, so this is a no-op
+        pass
+
     def reset_input_buffer(self) -> None:
         """Flush input buffer."""
         self._input_buffer.clear()

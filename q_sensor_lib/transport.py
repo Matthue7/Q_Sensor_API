@@ -24,6 +24,10 @@ class SerialLike(Protocol):
         """Read a line from serial port."""
         ...
 
+    def flush(self) -> None:
+        """Flush output buffer (force transmission)."""
+        ...
+
     def reset_input_buffer(self) -> None:
         """Flush input buffer."""
         ...
@@ -118,6 +122,7 @@ class Transport:
 
         try:
             sent = self._port.write(data)
+            self._port.flush()  # Force immediate transmission
             logger.debug(f"Sent {sent} bytes: {data!r}")
         except Exception as e:
             raise SerialIOError(f"Failed to write to port: {e}") from e
