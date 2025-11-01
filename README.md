@@ -423,29 +423,6 @@ controller.pause()
 controller.resume()
 ```
 
-## License
-
-MIT
-
-## Support
-
-For protocol questions, see `docs/00_Serial_protocol_2150.md`
-
-For library issues, file a GitHub issue with:
-- Python version
-- Library version
-- Minimal code example
-- Full error traceback
-- Debug logs if possible
-
-## Contributing
-
-1. Install dev dependencies: `pip install -e ".[dev]"`
-2. Run tests: `pytest`
-3. Check types: `mypy q_sensor_lib`
-4. Format code: `ruff check --fix q_sensor_lib tests`
-5. Submit PR with tests for new features
-
 ## Changelog
 
 ### 0.1.0 (2025-01-XX)
