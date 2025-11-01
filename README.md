@@ -6,10 +6,12 @@ Production-quality Python library for Biospherical Q-Series sensors running firm
 
 - **Clean Hardware Abstraction**: GUI-free HAL for serial communication
 - **Full Protocol Support**: Menu navigation, freerun streaming, polled queries
+- **DataFrame Recording Layer**: Real-time pandas DataFrame recording with CSV/Parquet export
 - **Type-Safe API**: Complete type hints with Python 3.11+
-- **Thread-Safe Buffering**: Ring buffer for sensor readings
+- **Thread-Safe Buffering**: Ring buffer for sensor readings + DataFrame storage
 - **Comprehensive Testing**: Unit tests with device simulator (no hardware required)
 - **Production Ready**: Error handling, logging, state management
+- **Firmware-Aligned**: Verified against firmware source code (v4.003)
 
 ## Installation
 
@@ -84,6 +86,56 @@ for reading in readings[-10:]:  # Last 10 readings
 
 controller.disconnect()
 ```
+
+### DataFrame Recording (Pandas Integration)
+
+The `data_store` module provides real-time recording of sensor readings into pandas DataFrames:
+
+```python
+from q_sensor_lib import SensorController
+from data_store import DataStore, DataRecorder
+
+# Setup controller
+controller = SensorController()
+controller.connect("/dev/ttyUSB0")
+controller.set_mode("freerun")
+controller.set_averaging(125)
+controller.set_adc_rate(125)  # 1 Hz sample rate
+
+# Create DataFrame store and recorder
+store = DataStore(max_rows=10000)
+recorder = DataRecorder(controller, store, poll_interval_s=0.2)
+
+# Start acquisition and recording
+controller.start_acquisition()
+recorder.start()
+
+# ... let it run for a while ...
+
+# CRITICAL: Stop recorder BEFORE controller to avoid data loss
+recorder.stop(flush_format="csv")  # Exports to CSV automatically
+controller.stop()
+controller.disconnect()
+
+# Access recorded data
+df = store.get_dataframe()
+print(f"Recorded {len(df)} readings")
+print(df.head())
+
+# Get statistics
+stats = store.get_stats()
+print(f"Sample rate: {stats['est_sample_rate_hz']:.2f} Hz")
+print(f"Duration: {stats['duration_s']:.1f} seconds")
+```
+
+**Key features:**
+- Thread-safe DataFrame storage with configurable max rows
+- Automatic NaN handling for optional fields (TempC, Vin)
+- Export to CSV or Parquet
+- Real-time statistics (sample rate, duration, row count)
+- Works identically for freerun and polled modes
+
+See [docs/DATAFRAME_RECORDING.md](docs/DATAFRAME_RECORDING.md) for complete documentation.
 
 ### Pause and Resume
 

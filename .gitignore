@@ -23,3 +23,6 @@ venv/
 # IDE
 .vscode/
 .idea/
+
+# Data files
+*.csv
