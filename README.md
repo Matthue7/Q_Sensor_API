@@ -137,6 +137,51 @@ print(f"Duration: {stats['duration_s']:.1f} seconds")
 
 See [docs/DATAFRAME_RECORDING.md](docs/DATAFRAME_RECORDING.md) for complete documentation.
 
+### REST API (FastAPI)
+
+The `api` module provides a REST and WebSocket interface:
+
+```bash
+# Start API server
+uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
+
+# Interactive docs at http://localhost:8000/docs
+```
+
+**Example API workflow:**
+
+```bash
+# Connect
+curl -X POST "http://localhost:8000/connect?port=/dev/ttyUSB0&baud=9600"
+
+# Configure
+curl -X POST http://localhost:8000/config \
+  -H "Content-Type: application/json" \
+  -d '{"averaging": 125, "adc_rate_hz": 125, "mode": "freerun"}'
+
+# Start acquisition & recording
+curl -X POST http://localhost:8000/start
+curl -X POST http://localhost:8000/recording/start
+
+# Get data
+curl http://localhost:8000/latest
+curl "http://localhost:8000/recent?seconds=60"
+
+# WebSocket streaming (JavaScript)
+const ws = new WebSocket("ws://localhost:8000/stream");
+ws.onmessage = (event) => {
+    const reading = JSON.parse(event.data);
+    console.log(reading.value, reading.timestamp);
+};
+
+# Stop & disconnect
+curl -X POST "http://localhost:8000/recording/stop?flush=csv"
+curl -X POST http://localhost:8000/stop
+curl -X POST http://localhost:8000/disconnect
+```
+
+See [docs/API_REFERENCE.md](docs/API_REFERENCE.md) for complete API documentation.
+
 ### Pause and Resume
 
 ```python
