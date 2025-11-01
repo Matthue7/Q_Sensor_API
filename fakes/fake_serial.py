@@ -191,6 +191,25 @@ class FakeSerial:
 
         first_char = cmd[0]
 
+        # Special case: If waiting for TAG input after MODE=1, treat single letters as TAG
+        logger.debug(f"_handle_menu_command: cmd={cmd!r}, _last_menu_cmd={self._last_menu_cmd}, operating_mode={self.operating_mode}")
+        if self._last_menu_cmd == "M" and self.operating_mode == "1":
+            if len(cmd) == 1 and "A" <= first_char <= "Z":
+                # TAG input
+                logger.debug(f"Accepting TAG: {first_char}")
+                self.tag = first_char
+                time.sleep(0.1)
+                self._send_menu_prompt()
+                self._last_menu_cmd = None  # Clear context
+                return
+            elif len(cmd) == 1:
+                # Invalid TAG
+                self._send_line(" Bad TAG ")
+                time.sleep(0.1)
+                self._send_menu_prompt()
+                self._last_menu_cmd = None  # Clear context
+                return
+
         if first_char == "A":
             # Averaging command
             self._last_menu_cmd = "A"  # Track context
@@ -293,6 +312,7 @@ class FakeSerial:
                         "Enter the single character that will be the tag used in polling "
                         "(A-F) UPPER case"
                     )
+                    logger.debug("Sending 'Note tags' line from numeric input handler (MODE=1)")
                     self._send_line(
                         "Note tags G-Z may not be supported in some Biospherical "
                         "acquisition software : "
@@ -329,6 +349,7 @@ class FakeSerial:
                             "Enter the single character that will be the tag used in polling "
                             "(A-F) UPPER case"
                         )
+                        logger.debug("Sending 'Note tags' line from fallback handler (MODE=1)")
                         self._send_line(
                             "Note tags G-Z may not be supported in some Biospherical "
                             "acquisition software : "
