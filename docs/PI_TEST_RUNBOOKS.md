@@ -1,5 +1,35 @@
 # Raspberry Pi Hardware Test Runbooks
 
+> **⚠️ IMPORTANT:** This is a **markdown documentation file** containing embedded Python scripts.
+> **DO NOT** try to run this `.md` file directly as Python - it will cause syntax errors.
+
+## How to Use These Runbooks
+
+This document contains three complete Python test scripts embedded in markdown code blocks.
+
+**To run a runbook:**
+
+1. Open this file (`PI_TEST_RUNBOOKS.md`) in any text editor
+2. Find the runbook you want (A, B, or C - see below)
+3. **Copy the code** between the ` ```python ` and ` ``` ` markers
+4. **Paste into a new file** and save as `.py` (e.g., `runbook_a.py`)
+5. **Run on your Raspberry Pi:**
+   ```bash
+   cd /path/to/Q_Sensor_API
+   python3 runbook_a.py
+   ```
+
+**Quick extract using sed:**
+```bash
+# Extract Runbook A to file
+sed -n '/^```python$/,/^```$/p' docs/PI_TEST_RUNBOOKS.md | \
+  sed '1d;$d' > runbook_a.py
+```
+
+---
+
+## Overview
+
 This document contains three ready-to-run Python scripts for validating `q_sensor_lib` on Raspberry Pi with real Q-Series hardware.
 
 Each script is **verbatim copy-paste ready** - save to a `.py` file and run directly on your Pi.

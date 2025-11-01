@@ -56,6 +56,7 @@ class FakeSerial:
         # Runtime state
         self._state = "init"  # "init", "menu", "freerun", "polled"
         self._sampling_started = False  # For polled mode initialization
+        self._last_menu_cmd: Optional[str] = None  # Track last menu command for context
 
         # Output queue for lines to send to "host"
         self._output_queue: queue.Queue[bytes] = queue.Queue()
@@ -69,6 +70,7 @@ class FakeSerial:
 
         # Port state
         self.is_open = True
+        self.timeout = 0.5  # Readline timeout (matches Transport default)
 
         # Start in init state - will send banner on first interaction
         self._initial_startup = True
@@ -191,6 +193,7 @@ class FakeSerial:
 
         if first_char == "A":
             # Averaging command
+            self._last_menu_cmd = "A"  # Track context
             self._send_line("If you set this to 125 averaged and use R command to set ADC rate to")
             self._send_line("125 samples per second, then you will get data at roughly 1hz.")
             self._send_line("Enter # readings to average before update (1-65535): ")
@@ -198,11 +201,13 @@ class FakeSerial:
 
         elif first_char == "R":
             # Rate command
+            self._last_menu_cmd = "R"  # Track context
             self._send_line("Enter ADC rate (4, 8, 16, 33, 62, 125, 250* Hz)")
             self._send_line(" *250Hz is at reduced resolution     ---- Enter selection: ")
 
         elif first_char == "M":
             # Mode command
+            self._last_menu_cmd = "M"  # Track context
             self._send_line(
                 "Set operating mode.  Mode 0 is freerun, 1 is polled.  "
                 "Polled require a TAG to be defined"
@@ -236,56 +241,52 @@ class FakeSerial:
             self._send_menu_prompt()
 
     def _handle_numeric_input(self, value_str: str) -> None:
-        """Handle numeric input in response to prompts."""
-        # Determine what we're setting based on recent context
-        # For simplicity, we assume the controller sends commands in order:
-        # A -> number, R -> number, M -> 0/1 -> TAG
+        """Handle numeric input in response to prompts.
 
-        # This is a simplified implementation - we'd need state tracking
-        # for production. For testing purposes, we check value range:
-
+        Uses context from _last_menu_cmd to distinguish between averaging, rate, and mode.
+        """
         try:
             val = int(value_str)
 
-            if 1 <= val <= 65535:
-                # Likely averaging
-                if val < 1:
-                    self._send_line("")
-                    self._send_line("")
-                    self._send_line("")
-                    self._send_line(
-                        "****Invalid number, averaging set to 12.  Command ignored ****"
-                    )
-                    self._send_line("")
-                    self._send_line("")
-                    self._send_line("")
-                    self._send_line("")
-                    self.averaging = 12
-                else:
-                    self.averaging = val
-                    self._send_line(f"{val} was entered")
-                    self._send_line("")
-                    self._send_line(f"ADC set to averaging {val}")
-
-                time.sleep(0.2)
-                self._send_menu_prompt()
-
-            elif val in {4, 8, 16, 33, 62, 125, 250, 500}:
-                # Valid ADC rate
-                self.adc_rate_hz = val
+            # Use context to determine what we're setting
+            if self._last_menu_cmd == "A":
+                # Averaging command context
+                self.averaging = val
+                self._send_line(f"{val} was entered")
                 self._send_line("")
-                self._send_line(f"ADC rate set to {val}")
+                self._send_line(f"ADC set to averaging {val}")
                 time.sleep(0.2)
                 self._send_menu_prompt()
+                self._last_menu_cmd = None  # Clear context
 
-            elif val in {0, 1}:
-                # Mode selection
+            elif self._last_menu_cmd == "R":
+                # Rate command context
+                if val in {4, 8, 16, 33, 62, 125, 250, 500}:
+                    self.adc_rate_hz = val
+                    self._send_line("")
+                    self._send_line(f"ADC rate set to {val}")
+                    time.sleep(0.2)
+                    self._send_menu_prompt()
+                    self._last_menu_cmd = None  # Clear context
+                else:
+                    # Invalid rate
+                    self._send_line("")
+                    self._send_line("")
+                    self._send_line("")
+                    self._send_line("Invalid rate!!! Command is ignored.")
+                    time.sleep(0.5)
+                    self._send_menu_prompt()
+                    self._last_menu_cmd = None  # Clear context
+
+            elif self._last_menu_cmd == "M":
+                # Mode command context
                 if val == 0:
                     self.operating_mode = "0"
                     self._send_line("0")
                     time.sleep(0.1)
                     self._send_menu_prompt()
-                else:
+                    self._last_menu_cmd = None  # Clear context
+                elif val == 1:
                     self.operating_mode = "1"
                     self._send_line("")
                     self._send_line(
@@ -296,16 +297,58 @@ class FakeSerial:
                         "Note tags G-Z may not be supported in some Biospherical "
                         "acquisition software : "
                     )
-                    # Wait for TAG input
+                    # Wait for TAG input (don't clear context yet)
+                else:
+                    # Invalid mode
+                    self._send_line("")
+                    self._send_line("Invalid mode")
+                    time.sleep(0.1)
+                    self._send_menu_prompt()
+                    self._last_menu_cmd = None  # Clear context
 
             else:
-                # Invalid rate
-                self._send_line("")
-                self._send_line("")
-                self._send_line("")
-                self._send_line("Invalid rate!!! Command is ignored.")
-                time.sleep(0.5)
-                self._send_menu_prompt()
+                # No context - shouldn't happen in normal flow, but fallback to old logic
+                # Check ADC rates (discrete set)
+                if val in {4, 8, 16, 33, 62, 125, 250, 500}:
+                    self.adc_rate_hz = val
+                    self._send_line("")
+                    self._send_line(f"ADC rate set to {val}")
+                    time.sleep(0.2)
+                    self._send_menu_prompt()
+                # Check mode selection
+                elif val in {0, 1}:
+                    if val == 0:
+                        self.operating_mode = "0"
+                        self._send_line("0")
+                        time.sleep(0.1)
+                        self._send_menu_prompt()
+                    else:
+                        self.operating_mode = "1"
+                        self._send_line("")
+                        self._send_line(
+                            "Enter the single character that will be the tag used in polling "
+                            "(A-F) UPPER case"
+                        )
+                        self._send_line(
+                            "Note tags G-Z may not be supported in some Biospherical "
+                            "acquisition software : "
+                        )
+                # Assume averaging
+                elif 1 <= val <= 65535:
+                    self.averaging = val
+                    self._send_line(f"{val} was entered")
+                    self._send_line("")
+                    self._send_line(f"ADC set to averaging {val}")
+                    time.sleep(0.2)
+                    self._send_menu_prompt()
+                else:
+                    # Invalid
+                    self._send_line("")
+                    self._send_line("")
+                    self._send_line("")
+                    self._send_line("Invalid value")
+                    time.sleep(0.5)
+                    self._send_menu_prompt()
 
         except ValueError:
             # Not a number - might be TAG
@@ -313,10 +356,12 @@ class FakeSerial:
                 self.tag = value_str
                 time.sleep(0.1)
                 self._send_menu_prompt()
+                self._last_menu_cmd = None  # Clear context
             else:
                 self._send_line(" Bad TAG ")
                 time.sleep(0.1)
                 self._send_menu_prompt()
+                self._last_menu_cmd = None  # Clear context
 
     def _handle_freerun_command(self, cmd: str) -> None:
         """Handle commands in freerun mode (only ESC/? handled via interrupt)."""
