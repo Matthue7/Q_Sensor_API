@@ -37,7 +37,7 @@ def main():
     parser.add_argument("--baud", type=int, default=9600)
     parser.add_argument("--duration", type=int, default=10)
     parser.add_argument("--tag", default="A", help="TAG character (A-Z)")
-    parser.add_argument("--poll-rate", type=float, default=2.0,
+    parser.add_argument("--poll-hz", type=float, default=2.0,
                        help="Poll rate in Hz (default: 2.0)")
     parser.add_argument("--fake", action="store_true")
     args = parser.parse_args()
@@ -55,7 +55,7 @@ def main():
         print(f"{'='*60}")
         print(f"Test: Polled Mode Smoke Test")
         print(f"Port: {args.port if not args.fake else 'FakeSerial'}")
-        print(f"TAG: {args.tag}, Poll Rate: {args.poll_rate} Hz")
+        print(f"TAG: {args.tag}, Poll Rate: {args.poll_hz} Hz")
         print(f"Duration: {args.duration}s")
         print(f"{'='*60}\n")
 
@@ -90,8 +90,8 @@ def main():
         recorder = DataRecorder(controller, store, poll_interval_s=0.2)
 
         # Start acquisition with specified poll rate
-        logger.info(f"Starting acquisition at {args.poll_rate} Hz...")
-        controller.start_acquisition(poll_hz=args.poll_rate)
+        logger.info(f"Starting acquisition at {args.poll_hz} Hz...")
+        controller.start_acquisition(poll_hz=args.poll_hz)
         time.sleep(0.5)
 
         # Start recording
@@ -130,7 +130,7 @@ def main():
 
         metrics["rows"] = final_count
         metrics["duration_s"] = duration
-        metrics["poll_rate_hz"] = args.poll_rate
+        metrics["poll_rate_hz"] = args.poll_hz
 
         # Verify all rows are polled mode
         df = store.get_dataframe()
@@ -150,7 +150,7 @@ def main():
         metrics["csv_path"] = str(csv_path)
 
         # Validate: expected rows = duration * poll_rate ± 20%
-        expected = args.duration * args.poll_rate
+        expected = args.duration * args.poll_hz
         min_rows = int(expected * 0.9)  # 90% of expected
         max_rows = int(expected * 1.1) + 2  # 110% + buffer
 

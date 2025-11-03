@@ -83,7 +83,7 @@ def make_polled_query_cmd(tag: str) -> str:
 
 # API-readiness timing constants (hardware-validated)
 DELAY_POST_OPEN: Final[float] = 1.2  # Wait for power-on banner before sending ESC
-DELAY_POST_RESET: Final[float] = 1.5  # Wait after 'X' command for device reboot
+DELAY_POST_RESET: Final[float] = 2.5  # Wait after 'X' command for device reboot (increased for menu re-display)
 TIMEOUT_MENU_PROMPT: Final[float] = 3.0  # Timeout for menu prompt appearance
 TIMEOUT_READ_LINE: Final[float] = 0.5  # Serial readline timeout (increased for robustness)
 POLL_INTERVAL_MIN: Final[float] = 0.1  # Minimum polled mode query interval (untested limit)

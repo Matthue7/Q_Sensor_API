@@ -786,6 +786,32 @@ class SensorController:
                 if not line:
                     continue
 
+                # Filter out known menu/banner/diagnostic lines before attempting parse
+                # These appear after 'X' command due to device reset
+                menu_markers = [
+                    "Select the letter of",
+                    " to set ",
+                    "Operating in",
+                    "ADC sample rate",
+                    "Averaging",
+                    "Sensor temperature:",
+                    "Input Supply Voltage",
+                    "Calfactor:",
+                    "Reset ADC",
+                    "Start free run",
+                    "Starting Sampling",
+                    "Biospherical Instruments",
+                    "Digital Engine",
+                    "Unit ID",
+                    "Rebooting program",
+                    "gain ",
+                    "Buffer disabled",
+                ]
+
+                if any(marker in line for marker in menu_markers):
+                    logger.debug(f"Skipping menu/diagnostic line: {line[:60]}")
+                    continue
+
                 # Try parsing as freerun data
                 try:
                     data = parsing.parse_freerun_line(line)
