@@ -338,9 +338,12 @@ class SensorController:
         # Delay to ensure firmware completes full prompt transmission
         time.sleep(0.5)
 
-        # Send mode choice: "0" for freerun, "1" for polled
+        # Send mode choice character (single char input for HRSIn)
+        # Send character first, then CR separately to avoid misinterpretation
         mode_char = "0" if mode == "freerun" else "1"
-        self._transport.write_cmd(mode_char)
+        self._transport.write_bytes(mode_char.encode("ascii"))
+        time.sleep(0.05)  # Brief delay between char and CR
+        self._transport.write_bytes(protocol.INPUT_TERMINATOR)
 
         if mode == "polled":
             # Wait for TAG prompt (firmware sends 2-line prompt)
@@ -350,9 +353,12 @@ class SensorController:
             # Delay to ensure firmware completes full prompt transmission
             time.sleep(0.5)
 
-            # Send TAG
+            # Send TAG character (single char input for HRSIn)
+            # Send character first, then CR separately to avoid misinterpretation
             assert tag is not None
-            self._transport.write_cmd(tag)
+            self._transport.write_bytes(tag.encode("ascii"))
+            time.sleep(0.05)  # Brief delay between char and CR
+            self._transport.write_bytes(protocol.INPUT_TERMINATOR)
 
             # Check for bad tag error
             start = time.time()
