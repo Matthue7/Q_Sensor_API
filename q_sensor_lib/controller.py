@@ -323,18 +323,24 @@ class SensorController:
         # Send 'M' command
         self._transport.write_cmd(protocol.MENU_CMD_MODE)
 
-        # Wait for mode prompt
+        # Wait for mode prompt (firmware sends 2-line prompt)
         if not self._wait_for_prompt(protocol.RE_MODE_PROMPT, timeout=5.0):
             raise MenuTimeout("Did not receive mode prompt")
+
+        # Brief delay to ensure firmware completes full prompt transmission
+        time.sleep(0.1)
 
         # Send mode choice: "0" for freerun, "1" for polled
         mode_char = "0" if mode == "freerun" else "1"
         self._transport.write_cmd(mode_char)
 
         if mode == "polled":
-            # Wait for TAG prompt
+            # Wait for TAG prompt (firmware sends 2-line prompt)
             if not self._wait_for_prompt(protocol.RE_TAG_PROMPT, timeout=5.0):
                 raise MenuTimeout("Did not receive TAG prompt")
+
+            # Brief delay to ensure firmware completes full prompt transmission
+            time.sleep(0.1)
 
             # Send TAG
             assert tag is not None
