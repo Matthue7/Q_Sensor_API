@@ -249,9 +249,15 @@ class SensorController:
         # Send 'R' command
         self._transport.write_cmd(protocol.MENU_CMD_RATE)
 
-        # Wait for prompt
+        # Wait for first line of prompt ("Enter ADC rate...")
         if not self._wait_for_prompt(protocol.RE_RATE_PROMPT, timeout=5.0):
             raise MenuTimeout("Did not receive rate prompt")
+
+        # Firmware sends 2-line prompt. Wait for second line ("Enter selection:")
+        # to ensure full prompt is transmitted before we send the value
+        second_line = self._transport.readline(timeout=1.0)
+        if not second_line or "Enter selection" not in second_line:
+            logger.warning(f"Expected 'Enter selection' prompt, got: {second_line}")
 
         # Send value
         self._transport.write_cmd(str(rate_hz))
