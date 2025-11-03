@@ -354,22 +354,26 @@ class SensorController:
             assert tag is not None
             self._transport.write_bytes(tag.encode("ascii"))
 
-            # Check for bad tag error
+            # Check for bad tag error (firmware echoes error immediately if invalid)
             start = time.time()
-            while time.time() - start < 3.0:
+            while time.time() - start < 1.0:
                 line = self._transport.readline()
                 if not line:
                     continue
                 if protocol.RE_ERROR_BAD_TAG.search(line):
                     raise InvalidConfigValue(f"Device rejected TAG '{tag}': {line}")
 
+        # After mode change, firmware displays banner and full menu
+        # Give it time to complete transmission
+        time.sleep(1.0)
+
         # Update cached config
         if self._config:
             self._config.mode = mode  # type: ignore
             self._config.tag = tag
 
-        # Wait for menu prompt
-        if not self._wait_for_menu_prompt(timeout=protocol.TIMEOUT_MENU_PROMPT):
+        # Wait for menu prompt with extended timeout (banner + full menu takes time)
+        if not self._wait_for_menu_prompt(timeout=10.0):
             raise MenuTimeout("Menu did not re-appear after mode change")
 
         logger.info(f"Mode set to {mode}" + (f" with tag {tag}" if tag else ""))
