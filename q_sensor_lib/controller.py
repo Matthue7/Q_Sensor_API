@@ -219,6 +219,10 @@ class SensorController:
                 # Wait for menu prompt to return
                 if not self._wait_for_menu_prompt(timeout=protocol.TIMEOUT_MENU_PROMPT):
                     raise MenuTimeout("Menu did not re-appear after averaging change")
+
+                # Additional delay to let full menu redisplay complete
+                time.sleep(protocol.MENU_REDISPLAY_DELAY)
+
                 return self.get_config()
 
         raise MenuTimeout("Timeout waiting for averaging confirmation")
@@ -286,6 +290,10 @@ class SensorController:
                 # Wait for menu prompt
                 if not self._wait_for_menu_prompt(timeout=protocol.TIMEOUT_MENU_PROMPT):
                     raise MenuTimeout("Menu did not re-appear after rate change")
+
+                # Additional delay to let full menu redisplay complete
+                time.sleep(protocol.MENU_REDISPLAY_DELAY)
+
                 return self.get_config()
 
         raise MenuTimeout("Timeout waiting for rate confirmation")

@@ -91,6 +91,9 @@ POLL_INTERVAL_MIN: Final[float] = 0.1  # Minimum polled mode query interval (unt
 # Delay before menu displays after entry (DelayMS 1000 at line 1092)
 MENU_DISPLAY_DELAY: Final[float] = 1.0
 
+# Time to wait after menu commands for full menu redisplay to complete
+MENU_REDISPLAY_DELAY: Final[float] = 0.5
+
 # Time to wait for device banner after power-on/reset (QuietMode=0)
 BANNER_SETTLE_TIME: Final[float] = 2.5
 
