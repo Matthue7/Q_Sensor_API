@@ -7,9 +7,11 @@ Production-quality Python library for Biospherical Q-Series sensors running firm
 - **Clean Hardware Abstraction**: GUI-free HAL for serial communication
 - **Full Protocol Support**: Menu navigation, freerun streaming, polled queries
 - **DataFrame Recording Layer**: Real-time pandas DataFrame recording with CSV/Parquet export
+- **REST API (FastAPI)**: HTTP endpoints and WebSocket streaming for remote access
 - **Type-Safe API**: Complete type hints with Python 3.11+
 - **Thread-Safe Buffering**: Ring buffer for sensor readings + DataFrame storage
 - **Comprehensive Testing**: Unit tests with device simulator (no hardware required)
+- **Hardware Validation Suite**: 10 standalone scripts for operational testing on Raspberry Pi
 - **Production Ready**: Error handling, logging, state management
 - **Firmware-Aligned**: Verified against firmware source code (v4.003)
 
@@ -396,7 +398,9 @@ controller.connect(port="/dev/ttyUSB0")
 
 ## Testing
 
-Run all tests (uses FakeSerial, no hardware required):
+### Unit Tests (No Hardware Required)
+
+Run all unit tests with FakeSerial simulator:
 
 ```bash
 pytest
@@ -413,6 +417,38 @@ Run specific test file:
 ```bash
 pytest tests/test_freerun_stream.py -v
 ```
+
+### Hardware Validation Tests (Raspberry Pi)
+
+For operational validation on real hardware, use the standalone test scripts in `pi_hw_tests/`:
+
+```bash
+# Environment check
+python3 pi_hw_tests/00_env_check.py
+
+# Connection test
+python3 pi_hw_tests/01_connect_and_identify.py --port /dev/ttyUSB0
+
+# Freerun smoke test (10s acquisition)
+python3 pi_hw_tests/02_freerun_smoke.py --port /dev/ttyUSB0
+
+# Run all tests
+for script in pi_hw_tests/0*.py; do
+    python3 "$script" --port /dev/ttyUSB0 || break
+done
+```
+
+All scripts support `--fake` mode for dry-run testing without hardware:
+
+```bash
+python3 pi_hw_tests/02_freerun_smoke.py --fake
+```
+
+See [pi_hw_tests/README.md](pi_hw_tests/README.md) for complete documentation on:
+- Test coverage and expected metrics
+- Troubleshooting (permissions, ports, menu timeouts)
+- Advanced usage (custom durations, burn-in tests, export validation)
+- Output locations (`./pi_hw_tests/out/` for data, `./pi_hw_tests/logs/` for logs)
 
 ## Protocol Reference
 
