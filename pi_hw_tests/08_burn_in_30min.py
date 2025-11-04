@@ -100,9 +100,9 @@ def main():
         logger.info("Starting acquisition...")
         controller.start_acquisition()
 
-        # Wait for initial samples
+        # Wait for initial samples (reduced to 3 due to menu filtering)
         logger.info("Waiting for initial samples...")
-        if not wait_for_samples(controller, min_samples=5, timeout=3.0):
+        if not wait_for_samples(controller, min_samples=3, timeout=5.0):
             raise TimeoutError("No samples received after start")
 
         logger.info("✓ Acquisition running")
