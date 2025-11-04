@@ -1,0 +1,11 @@
+2025-11-03 11:53:26,106 - 02_freerun_smoke - INFO - Logging to /home/pi/Q_Sensor_API/pi_hw_tests/logs/02_freerun_smoke_20251103_115326.log
+2025-11-03 11:53:26,107 - 02_freerun_smoke - INFO - Connecting to /dev/ttyUSB0...
+2025-11-03 11:53:30,465 - 02_freerun_smoke - INFO - Configuring freerun mode (125 avg, 125 Hz)...
+2025-11-03 11:53:51,482 - 02_freerun_smoke - ERROR - Test failed: Timeout waiting for rate confirmation
+Traceback (most recent call last):
+  File "/home/pi/Q_Sensor_API/pi_hw_tests/02_freerun_smoke.py", line 91, in main
+    controller.set_adc_rate(125)
+  File "/home/pi/Q_Sensor_API/q_sensor_lib/controller.py", line 285, in set_adc_rate
+    raise MenuTimeout("Timeout waiting for rate confirmation")
+q_sensor_lib.errors.MenuTimeout: Timeout waiting for rate confirmation
+2025-11-03 11:53:51,487 - 02_freerun_smoke - INFO - Disconnecting...

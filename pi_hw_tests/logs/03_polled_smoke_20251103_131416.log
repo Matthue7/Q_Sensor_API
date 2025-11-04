@@ -1,0 +1,11 @@
+2025-11-03 13:14:16,269 - 03_polled_smoke - INFO - Logging to /home/pi/Q_Sensor_API/pi_hw_tests/logs/03_polled_smoke_20251103_131416.log
+2025-11-03 13:14:16,269 - 03_polled_smoke - INFO - Connecting to /dev/ttyUSB0...
+2025-11-03 13:14:20,650 - 03_polled_smoke - INFO - Configuring polled mode (TAG=A)...
+2025-11-03 13:14:38,489 - 03_polled_smoke - ERROR - Test failed: Menu did not re-appear after mode change
+Traceback (most recent call last):
+  File "/home/pi/Q_Sensor_API/pi_hw_tests/03_polled_smoke.py", line 85, in main
+    controller.set_mode("polled", tag=args.tag)
+  File "/home/pi/Q_Sensor_API/q_sensor_lib/controller.py", line 373, in set_mode
+    raise MenuTimeout("Menu did not re-appear after mode change")
+q_sensor_lib.errors.MenuTimeout: Menu did not re-appear after mode change
+2025-11-03 13:14:38,494 - 03_polled_smoke - INFO - Disconnecting...

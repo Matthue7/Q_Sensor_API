@@ -1,0 +1,57 @@
+2025-11-04 10:57:24,826 - 08_burn_in_30min - INFO - Logging to /home/pi/Q_Sensor_API/pi_hw_tests/logs/08_burn_in_30min_20251104_105724.log
+2025-11-04 10:57:24,830 - 08_burn_in_30min - INFO - Connecting to /dev/ttyUSB0...
+2025-11-04 10:57:28,761 - 08_burn_in_30min - INFO - Sensor ID: serial ######   
+2025-11-04 10:57:28,761 - 08_burn_in_30min - INFO - Configuring for freerun mode (125 avg, 125 Hz ADC)...
+2025-11-04 10:57:42,471 - 08_burn_in_30min - INFO - Config: 125 avg, 125 Hz
+2025-11-04 10:57:42,472 - 08_burn_in_30min - INFO - Expected sample period: 1.000s (~1.0 Hz)
+2025-11-04 10:57:42,472 - 08_burn_in_30min - INFO - Starting acquisition...
+2025-11-04 10:57:45,976 - 08_burn_in_30min - INFO - Waiting for initial samples...
+2025-11-04 10:57:48,977 - 08_burn_in_30min - INFO - ✓ Acquisition running
+2025-11-04 10:57:48,978 - 08_burn_in_30min - INFO - Starting recorder...
+2025-11-04 10:57:48,979 - 08_burn_in_30min - INFO - 
+Starting burn-in for 1800.0s...
+2025-11-04 10:57:48,980 - 08_burn_in_30min - INFO - Monitoring sample rate every 60s...
+
+2025-11-04 10:58:49,014 - 08_burn_in_30min - INFO - [1.0m] Rows: 61, Rate: 1.0 Hz
+2025-11-04 10:59:49,034 - 08_burn_in_30min - INFO - [2.0m] Rows: 119, Rate: 1.0 Hz
+2025-11-04 11:00:49,055 - 08_burn_in_30min - INFO - [3.0m] Rows: 177, Rate: 1.0 Hz
+2025-11-04 11:01:49,076 - 08_burn_in_30min - INFO - [4.0m] Rows: 235, Rate: 1.0 Hz
+2025-11-04 11:02:49,097 - 08_burn_in_30min - INFO - [5.0m] Rows: 293, Rate: 1.0 Hz
+2025-11-04 11:03:49,120 - 08_burn_in_30min - INFO - [6.0m] Rows: 351, Rate: 1.0 Hz
+2025-11-04 11:04:49,142 - 08_burn_in_30min - INFO - [7.0m] Rows: 409, Rate: 1.0 Hz
+2025-11-04 11:05:49,169 - 08_burn_in_30min - INFO - [8.0m] Rows: 467, Rate: 1.0 Hz
+2025-11-04 11:06:49,192 - 08_burn_in_30min - INFO - [9.0m] Rows: 525, Rate: 1.0 Hz
+2025-11-04 11:07:49,215 - 08_burn_in_30min - INFO - [10.0m] Rows: 583, Rate: 1.0 Hz
+2025-11-04 11:08:49,239 - 08_burn_in_30min - INFO - [11.0m] Rows: 641, Rate: 1.0 Hz
+2025-11-04 11:09:49,264 - 08_burn_in_30min - INFO - [12.0m] Rows: 699, Rate: 1.0 Hz
+2025-11-04 11:10:49,289 - 08_burn_in_30min - INFO - [13.0m] Rows: 757, Rate: 1.0 Hz
+2025-11-04 11:11:49,314 - 08_burn_in_30min - INFO - [14.0m] Rows: 815, Rate: 1.0 Hz
+2025-11-04 11:12:49,340 - 08_burn_in_30min - INFO - [15.0m] Rows: 873, Rate: 1.0 Hz
+2025-11-04 11:13:49,368 - 08_burn_in_30min - INFO - [16.0m] Rows: 931, Rate: 1.0 Hz
+2025-11-04 11:14:49,392 - 08_burn_in_30min - INFO - [17.0m] Rows: 990, Rate: 1.0 Hz
+2025-11-04 11:15:49,419 - 08_burn_in_30min - INFO - [18.0m] Rows: 1048, Rate: 1.0 Hz
+2025-11-04 11:16:49,446 - 08_burn_in_30min - INFO - [19.0m] Rows: 1106, Rate: 1.0 Hz
+2025-11-04 11:17:49,475 - 08_burn_in_30min - INFO - [20.0m] Rows: 1164, Rate: 1.0 Hz
+2025-11-04 11:18:49,504 - 08_burn_in_30min - INFO - [21.0m] Rows: 1222, Rate: 1.0 Hz
+2025-11-04 11:19:49,533 - 08_burn_in_30min - INFO - [22.0m] Rows: 1280, Rate: 1.0 Hz
+2025-11-04 11:20:49,564 - 08_burn_in_30min - INFO - [23.0m] Rows: 1338, Rate: 1.0 Hz
+2025-11-04 11:21:49,595 - 08_burn_in_30min - INFO - [24.0m] Rows: 1396, Rate: 1.0 Hz
+2025-11-04 11:22:49,626 - 08_burn_in_30min - INFO - [25.0m] Rows: 1454, Rate: 1.0 Hz
+2025-11-04 11:23:49,657 - 08_burn_in_30min - INFO - [26.0m] Rows: 1512, Rate: 1.0 Hz
+2025-11-04 11:24:49,692 - 08_burn_in_30min - INFO - [27.0m] Rows: 1570, Rate: 1.0 Hz
+2025-11-04 11:25:49,724 - 08_burn_in_30min - INFO - [28.0m] Rows: 1628, Rate: 1.0 Hz
+2025-11-04 11:26:49,759 - 08_burn_in_30min - INFO - [29.0m] Rows: 1686, Rate: 1.0 Hz
+2025-11-04 11:27:49,762 - 08_burn_in_30min - INFO - 
+=== Burn-In Complete ===
+2025-11-04 11:27:49,762 - 08_burn_in_30min - INFO - Stopping recorder...
+2025-11-04 11:27:49,764 - 08_burn_in_30min - INFO - Total rows collected: 1744
+2025-11-04 11:27:49,765 - 08_burn_in_30min - INFO - Expected rows (~1.0 Hz): 1800
+2025-11-04 11:27:49,765 - 08_burn_in_30min - INFO - ✓ Row count within expected range (1440-2160)
+2025-11-04 11:27:49,766 - 08_burn_in_30min - INFO - Average sample rate: 0.97 Hz
+2025-11-04 11:27:49,793 - 08_burn_in_30min - INFO - Timestamp gaps - Median: 1.039s, Max: 1.057s
+2025-11-04 11:27:49,794 - 08_burn_in_30min - INFO - ✓ No excessive gaps detected
+2025-11-04 11:27:49,794 - 08_burn_in_30min - INFO - 
+Exporting data...
+2025-11-04 11:27:49,838 - 08_burn_in_30min - INFO - Data exported to /home/pi/Q_Sensor_API/pi_hw_tests/out/08_burn_in_30min_20251104_112749.csv
+2025-11-04 11:27:49,838 - 08_burn_in_30min - INFO - Stopping acquisition...
+2025-11-04 11:27:53,925 - 08_burn_in_30min - INFO - Disconnecting...

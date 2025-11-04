@@ -1,0 +1,11 @@
+2025-11-03 12:38:43,952 - 03_polled_smoke - INFO - Logging to /home/pi/Q_Sensor_API/pi_hw_tests/logs/03_polled_smoke_20251103_123843.log
+2025-11-03 12:38:43,952 - 03_polled_smoke - INFO - Connecting to /dev/ttyUSB0...
+2025-11-03 12:38:48,329 - 03_polled_smoke - INFO - Configuring polled mode (TAG=A)...
+2025-11-03 12:39:03,083 - 03_polled_smoke - ERROR - Test failed: Did not receive TAG prompt
+Traceback (most recent call last):
+  File "/home/pi/Q_Sensor_API/pi_hw_tests/03_polled_smoke.py", line 85, in main
+    controller.set_mode("polled", tag=args.tag)
+  File "/home/pi/Q_Sensor_API/q_sensor_lib/controller.py", line 340, in set_mode
+    raise MenuTimeout("Did not receive TAG prompt")
+q_sensor_lib.errors.MenuTimeout: Did not receive TAG prompt
+2025-11-03 12:39:03,089 - 03_polled_smoke - INFO - Disconnecting...
