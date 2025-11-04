@@ -1,0 +1,2 @@
+timestamp,sensor_id,mode,value,TempC,Vin
+2025-11-03T21:17:19.386277+00:00,serial ######   ,polled,0.010173,25.19,7.515
