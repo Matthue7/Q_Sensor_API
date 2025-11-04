@@ -85,9 +85,9 @@ def main():
             logger.info(f"Connecting to {args.port}...")
             controller.connect(port=args.port, baud=args.baud)
 
-        # Configure freerun
-        logger.info("Configuring freerun mode (125 avg, 125 Hz)...")
-        controller.set_averaging(125)
+        # Configure freerun (10 avg / 125 Hz = 12.5 Hz sample rate)
+        logger.info("Configuring freerun mode (10 avg, 125 Hz)...")
+        controller.set_averaging(10)
         controller.set_adc_rate(125)
         controller.set_mode("freerun")
 
