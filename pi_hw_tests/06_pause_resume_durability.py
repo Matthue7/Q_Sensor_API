@@ -123,10 +123,10 @@ def main():
             logger.info("Pausing acquisition...")
             controller.pause()
 
-            if controller.state != ConnectionState.CONFIG_MENU:
-                raise ValueError(f"Expected CONFIG_MENU after pause, got {controller.state}")
+            if controller.state != ConnectionState.PAUSED:
+                raise ValueError(f"Expected PAUSED after pause, got {controller.state}")
 
-            logger.info("✓ Paused (state=CONFIG_MENU)")
+            logger.info("✓ Paused (state=PAUSED)")
 
             # Brief pause
             time.sleep(0.5)
