@@ -14,6 +14,7 @@ Error mapping:
 
 import asyncio
 import logging
+import os
 import threading
 from pathlib import Path
 from threading import RLock
@@ -21,6 +22,8 @@ from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from data_store import DataRecorder, DataStore
@@ -28,9 +31,21 @@ from q_sensor_lib import SensorController
 from q_sensor_lib.errors import InvalidConfigValue, MenuTimeout, SerialIOError
 from q_sensor_lib.models import ConnectionState
 
+# =============================================================================
+# Environment Configuration
+# =============================================================================
+
+# Read configuration from environment variables
+API_HOST = os.getenv("API_HOST", "0.0.0.0")
+API_PORT = int(os.getenv("API_PORT", "8000"))
+DEFAULT_SERIAL_PORT = os.getenv("SERIAL_PORT", "/dev/ttyUSB0")
+DEFAULT_SERIAL_BAUD = int(os.getenv("SERIAL_BAUD", "9600"))
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
+
 # Configure logging
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
@@ -54,15 +69,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS for local development
+# CORS for local development (configurable via CORS_ORIGINS env var)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -100,6 +110,15 @@ class RecordingStopResponse(BaseModel):
     """Response for POST /recording/stop."""
     status: str
     flush_path: Optional[str]
+
+
+class StatsResponse(BaseModel):
+    """Response for GET /sensor/stats."""
+    row_count: int
+    start_time: Optional[str]
+    end_time: Optional[str]
+    duration_s: Optional[float]
+    est_sample_rate_hz: Optional[float]
 
 
 # =============================================================================
@@ -221,8 +240,8 @@ async def get_recent(seconds: int = Query(60, ge=1, le=300)):
 
 @app.post("/connect", response_model=ConnectResponse)
 async def connect(
-    port: str = Query(..., description="Serial port (e.g., /dev/ttyUSB0)"),
-    baud: int = Query(9600, description="Baud rate")
+    port: str = Query(DEFAULT_SERIAL_PORT, description="Serial port (e.g., /dev/ttyUSB0)"),
+    baud: int = Query(DEFAULT_SERIAL_BAUD, description="Baud rate")
 ):
     """Connect to sensor and enter config menu.
 
@@ -505,6 +524,208 @@ async def disconnect():
         return {"status": "disconnected"}
 
 
+@app.post("/pause")
+async def pause_acquisition():
+    """Pause acquisition (enter PAUSED state).
+
+    Sends ESC to pause data stream and enter pause menu.
+    Can be resumed with POST /resume.
+
+    Returns:
+        {"status": "paused"}
+
+    Raises:
+        503: If not connected or not in acquisition state
+    """
+    global _controller, _lock
+
+    if not _controller:
+        raise HTTPException(status_code=503, detail="Not connected")
+
+    with _lock:
+        if _controller.state not in (ConnectionState.ACQ_FREERUN, ConnectionState.ACQ_POLLED):
+            raise HTTPException(
+                status_code=400,
+                detail="Acquisition not running. Cannot pause."
+            )
+
+        logger.info("Pausing acquisition...")
+        _controller.pause()
+
+        return {"status": "paused"}
+
+
+@app.post("/resume")
+async def resume_acquisition():
+    """Resume acquisition from PAUSED state.
+
+    Exits pause menu and resumes data streaming in previous mode.
+
+    Returns:
+        {"status": "resumed", "mode": "..."}
+
+    Raises:
+        503: If not connected or not in PAUSED state
+    """
+    global _controller, _lock
+
+    if not _controller:
+        raise HTTPException(status_code=503, detail="Not connected")
+
+    with _lock:
+        if _controller.state != ConnectionState.PAUSED:
+            raise HTTPException(
+                status_code=400,
+                detail="Not in paused state. Cannot resume."
+            )
+
+        logger.info("Resuming acquisition...")
+        _controller.resume()
+
+        # Get mode after resuming
+        mode = "freerun" if _controller.state == ConnectionState.ACQ_FREERUN else "polled"
+
+        return {"status": "resumed", "mode": mode}
+
+
+# =============================================================================
+# Data Statistics & Export Endpoints
+# =============================================================================
+
+@app.get("/stats", response_model=StatsResponse)
+async def get_stats():
+    """Get statistics about collected data.
+
+    Returns row count, time range, duration, and estimated sample rate.
+    Thread-safe read via DataStore.
+
+    Returns:
+        StatsResponse with row_count, start_time, end_time, duration_s, est_sample_rate_hz
+    """
+    global _store
+
+    if not _store:
+        return StatsResponse(
+            row_count=0,
+            start_time=None,
+            end_time=None,
+            duration_s=None,
+            est_sample_rate_hz=None
+        )
+
+    stats = _store.get_stats()
+
+    return StatsResponse(
+        row_count=stats["row_count"],
+        start_time=stats["start_time"],
+        end_time=stats["end_time"],
+        duration_s=stats["duration_s"],
+        est_sample_rate_hz=stats["est_sample_rate_hz"]
+    )
+
+
+@app.get("/export/csv")
+async def export_csv():
+    """Export current data to CSV file without stopping recorder.
+
+    Creates a timestamped CSV file in the current directory.
+
+    Returns:
+        FileResponse with CSV download
+
+    Raises:
+        400: If no data available
+    """
+    global _store
+
+    if not _store:
+        raise HTTPException(status_code=400, detail="No data store available")
+
+    df = _store.get_dataframe()
+    if len(df) == 0:
+        raise HTTPException(status_code=400, detail="No data to export")
+
+    # Export to CSV
+    logger.info("Exporting data to CSV...")
+    csv_path = _store.export_csv()
+
+    if not csv_path or not Path(csv_path).exists():
+        raise HTTPException(status_code=500, detail="Failed to export CSV")
+
+    return FileResponse(
+        path=csv_path,
+        media_type="text/csv",
+        filename=Path(csv_path).name
+    )
+
+
+@app.get("/export/parquet")
+async def export_parquet():
+    """Export current data to Parquet file without stopping recorder.
+
+    Creates a timestamped Parquet file in the current directory.
+
+    Returns:
+        FileResponse with Parquet download
+
+    Raises:
+        400: If no data available
+    """
+    global _store
+
+    if not _store:
+        raise HTTPException(status_code=400, detail="No data store available")
+
+    df = _store.get_dataframe()
+    if len(df) == 0:
+        raise HTTPException(status_code=400, detail="No data to export")
+
+    # Export to Parquet
+    logger.info("Exporting data to Parquet...")
+    parquet_path = _store.export_parquet()
+
+    if not parquet_path or not Path(parquet_path).exists():
+        raise HTTPException(status_code=500, detail="Failed to export Parquet")
+
+    return FileResponse(
+        path=parquet_path,
+        media_type="application/octet-stream",
+        filename=Path(parquet_path).name
+    )
+
+
+# =============================================================================
+# /sensor/* Aliases (for API compatibility)
+# =============================================================================
+
+# Add aliases with /sensor prefix for all main endpoints
+app.add_api_route("/sensor/status", get_status, methods=["GET"], response_model=StatusResponse)
+app.add_api_route("/sensor/latest", get_latest, methods=["GET"])
+app.add_api_route("/sensor/recent", get_recent, methods=["GET"])
+app.add_api_route("/sensor/stats", get_stats, methods=["GET"], response_model=StatsResponse)
+app.add_api_route("/sensor/connect", connect, methods=["POST"], response_model=ConnectResponse)
+app.add_api_route("/sensor/config", set_config, methods=["POST"])
+app.add_api_route("/sensor/start", start_acquisition, methods=["POST"])
+app.add_api_route("/sensor/pause", pause_acquisition, methods=["POST"])
+app.add_api_route("/sensor/resume", resume_acquisition, methods=["POST"])
+app.add_api_route("/sensor/stop", stop_acquisition, methods=["POST"])
+
+# Add recording export aliases
+app.add_api_route("/recording/export/csv", export_csv, methods=["GET"])
+app.add_api_route("/recording/export/parquet", export_parquet, methods=["GET"])
+
+
+# =============================================================================
+# Static Files (Optional Test Page)
+# =============================================================================
+
+# Mount static files if directory exists
+static_dir = Path(__file__).parent / "static"
+if static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+    logger.info(f"Static files mounted from {static_dir}")
+
+
 # =============================================================================
 # WebSocket Streaming
 # =============================================================================
@@ -560,6 +781,13 @@ async def websocket_stream(websocket: WebSocket):
             pass
 
 
+# WebSocket alias for /sensor/stream
+@app.websocket("/sensor/stream")
+async def websocket_stream_alias(websocket: WebSocket):
+    """Alias for /stream with /sensor prefix."""
+    await websocket_stream(websocket)
+
+
 # =============================================================================
 # Health Check
 # =============================================================================
@@ -580,9 +808,16 @@ async def root():
 
 @app.on_event("startup")
 async def startup_event():
-    """Log startup."""
+    """Log startup and configuration."""
+    logger.info("=" * 60)
     logger.info("Q-Sensor API started")
-    logger.info("CORS enabled for localhost:3000 and 127.0.0.1:3000")
+    logger.info(f"Host: {API_HOST}")
+    logger.info(f"Port: {API_PORT}")
+    logger.info(f"Default Serial Port: {DEFAULT_SERIAL_PORT}")
+    logger.info(f"Default Serial Baud: {DEFAULT_SERIAL_BAUD}")
+    logger.info(f"CORS Origins: {CORS_ORIGINS}")
+    logger.info(f"Log Level: {LOG_LEVEL}")
+    logger.info("=" * 60)
 
 
 @app.on_event("shutdown")

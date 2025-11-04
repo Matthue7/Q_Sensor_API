@@ -627,3 +627,256 @@ def test_error_serial_io_503(client, monkeypatch_transport, monkeypatch):
 
     # Restore
     monkeypatch.setattr(api_module.SensorController, "start_acquisition", original_start)
+
+
+# =============================================================================
+# New Endpoint Tests
+# =============================================================================
+
+def test_stats_endpoint_no_data(client):
+    """Test GET /stats with no data."""
+    response = client.get("/stats")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["row_count"] == 0
+    assert data["start_time"] is None
+    assert data["end_time"] is None
+    assert data["duration_s"] is None
+    assert data["est_sample_rate_hz"] is None
+
+
+def test_stats_endpoint_with_alias(client):
+    """Test GET /sensor/stats alias."""
+    response = client.get("/sensor/stats")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "row_count" in data
+
+
+def test_stats_endpoint_with_data(client, monkeypatch_transport):
+    """Test GET /stats with actual data."""
+    import time
+
+    # Connect and start freerun
+    client.post("/connect?port=/dev/fake&baud=9600")
+    client.post("/config", json={"mode": "freerun", "averaging": 1})
+    client.post("/start")
+
+    # Start recording
+    client.post("/recording/start?poll_interval_s=0.1")
+
+    # Wait for some data
+    time.sleep(0.5)
+
+    # Get stats
+    response = client.get("/stats")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["row_count"] > 0
+    assert data["start_time"] is not None
+    assert data["end_time"] is not None
+
+    # Stop
+    client.post("/recording/stop")
+    client.post("/stop")
+
+
+def test_pause_resume_flow(client, monkeypatch_transport):
+    """Test pause and resume endpoints."""
+    # Connect and start
+    client.post("/connect?port=/dev/fake&baud=9600")
+    client.post("/config", json={"mode": "freerun"})
+    client.post("/start")
+
+    # Pause
+    response = client.post("/pause")
+    assert response.status_code == 200
+    assert response.json()["status"] == "paused"
+
+    # Check status
+    status = client.get("/status").json()
+    assert status["state"] == "paused"
+
+    # Resume
+    response = client.post("/resume")
+    assert response.status_code == 200
+    assert response.json()["status"] == "resumed"
+    assert response.json()["mode"] in ["freerun", "polled"]
+
+    # Stop
+    client.post("/stop")
+
+
+def test_pause_resume_with_alias(client, monkeypatch_transport):
+    """Test /sensor/pause and /sensor/resume aliases."""
+    # Connect and start
+    client.post("/sensor/connect?port=/dev/fake&baud=9600")
+    client.post("/sensor/config", json={"mode": "freerun"})
+    client.post("/sensor/start")
+
+    # Pause via alias
+    response = client.post("/sensor/pause")
+    assert response.status_code == 200
+
+    # Resume via alias
+    response = client.post("/sensor/resume")
+    assert response.status_code == 200
+
+    # Stop
+    client.post("/sensor/stop")
+
+
+def test_pause_not_acquiring(client, monkeypatch_transport):
+    """Test pause fails when not acquiring."""
+    client.post("/connect?port=/dev/fake&baud=9600")
+
+    response = client.post("/pause")
+    assert response.status_code == 400
+    assert "not running" in response.json()["detail"].lower()
+
+
+def test_resume_not_paused(client, monkeypatch_transport):
+    """Test resume fails when not paused."""
+    client.post("/connect?port=/dev/fake&baud=9600")
+    client.post("/config", json={"mode": "freerun"})
+    client.post("/start")
+
+    response = client.post("/resume")
+    assert response.status_code == 400
+    assert "not in paused state" in response.json()["detail"].lower()
+
+    client.post("/stop")
+
+
+def test_export_csv_endpoint(client, monkeypatch_transport):
+    """Test GET /export/csv endpoint."""
+    import time
+
+    # Connect and start
+    client.post("/connect?port=/dev/fake&baud=9600")
+    client.post("/config", json={"mode": "freerun", "averaging": 1})
+    client.post("/start")
+    client.post("/recording/start?poll_interval_s=0.1")
+
+    # Wait for data
+    time.sleep(0.3)
+
+    # Export CSV
+    response = client.get("/export/csv")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "text/csv; charset=utf-8"
+    assert ".csv" in response.headers["content-disposition"]
+
+    # Stop
+    client.post("/recording/stop")
+    client.post("/stop")
+
+
+def test_export_csv_via_alias(client, monkeypatch_transport):
+    """Test GET /recording/export/csv alias."""
+    import time
+
+    # Connect and start
+    client.post("/connect?port=/dev/fake&baud=9600")
+    client.post("/config", json={"mode": "freerun", "averaging": 1})
+    client.post("/start")
+    client.post("/recording/start?poll_interval_s=0.1")
+
+    # Wait for data
+    time.sleep(0.3)
+
+    # Export via alias
+    response = client.get("/recording/export/csv")
+
+    assert response.status_code == 200
+    assert "csv" in response.headers["content-type"]
+
+    # Stop
+    client.post("/recording/stop")
+    client.post("/stop")
+
+
+def test_export_csv_no_data(client):
+    """Test export CSV fails with no data."""
+    response = client.get("/export/csv")
+
+    assert response.status_code == 400
+    assert "No data" in response.json()["detail"]
+
+
+def test_export_parquet_endpoint(client, monkeypatch_transport):
+    """Test GET /export/parquet endpoint."""
+    import time
+
+    # Connect and start
+    client.post("/connect?port=/dev/fake&baud=9600")
+    client.post("/config", json={"mode": "freerun", "averaging": 1})
+    client.post("/start")
+    client.post("/recording/start?poll_interval_s=0.1")
+
+    # Wait for data
+    time.sleep(0.3)
+
+    # Export Parquet
+    response = client.get("/export/parquet")
+
+    assert response.status_code == 200
+    assert "octet-stream" in response.headers["content-type"]
+    assert ".parquet" in response.headers["content-disposition"]
+
+    # Stop
+    client.post("/recording/stop")
+    client.post("/stop")
+
+
+def test_export_parquet_via_alias(client, monkeypatch_transport):
+    """Test GET /recording/export/parquet alias."""
+    import time
+
+    # Connect and start
+    client.post("/connect?port=/dev/fake&baud=9600")
+    client.post("/config", json={"mode": "freerun", "averaging": 1})
+    client.post("/start")
+    client.post("/recording/start?poll_interval_s=0.1")
+
+    # Wait for data
+    time.sleep(0.3)
+
+    # Export via alias
+    response = client.get("/recording/export/parquet")
+
+    assert response.status_code == 200
+
+    # Stop
+    client.post("/recording/stop")
+    client.post("/stop")
+
+
+def test_recording_stop_with_parquet_flush(client, monkeypatch_transport):
+    """Test recording stop with Parquet flush format."""
+    import time
+
+    # Connect and start
+    client.post("/connect?port=/dev/fake&baud=9600")
+    client.post("/config", json={"mode": "freerun", "averaging": 1})
+    client.post("/start")
+    client.post("/recording/start?poll_interval_s=0.1")
+
+    # Wait for data
+    time.sleep(0.3)
+
+    # Stop with parquet flush
+    response = client.post("/recording/stop?flush=parquet")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "stopped"
+    assert data["flush_path"] is not None
+    assert ".parquet" in data["flush_path"]
+
+    # Stop acquisition
+    client.post("/stop")

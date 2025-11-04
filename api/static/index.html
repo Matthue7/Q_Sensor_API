@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Q-Sensor API Test Page</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 800px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .status-card {
+            background: #f7f7f7;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .status-card h2 {
+            font-size: 18px;
+            color: #333;
+            margin-bottom: 15px;
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .status-item {
+            background: white;
+            padding: 12px 15px;
+            border-radius: 6px;
+            border-left: 3px solid #667eea;
+        }
+
+        .status-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #888;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        .status-value {
+            font-size: 20px;
+            font-weight: 600;
+            color: #333;
+            margin-top: 5px;
+        }
+
+        .status-value.true {
+            color: #10b981;
+        }
+
+        .status-value.false {
+            color: #ef4444;
+        }
+
+        .reading-display {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .reading-label {
+            font-size: 14px;
+            opacity: 0.9;
+            margin-bottom: 10px;
+        }
+
+        .reading-value {
+            font-size: 48px;
+            font-weight: 700;
+            font-family: 'Courier New', monospace;
+        }
+
+        .reading-meta {
+            margin-top: 15px;
+            font-size: 12px;
+            opacity: 0.8;
+        }
+
+        .timestamp {
+            font-family: 'Courier New', monospace;
+        }
+
+        .error {
+            background: #fee;
+            border: 1px solid #fcc;
+            color: #c33;
+            padding: 12px 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+
+        .info {
+            background: #e0f2fe;
+            border: 1px solid #bae6fd;
+            color: #0369a1;
+            padding: 12px 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+
+        .footer {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            text-align: center;
+            color: #888;
+            font-size: 13px;
+        }
+
+        .footer a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        .pulse {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.5;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Q-Sensor API Monitor</h1>
+        <p class="subtitle">Real-time sensor data visualization</p>
+
+        <div id="error-container"></div>
+
+        <div class="reading-display">
+            <div class="reading-label">Latest Sensor Reading</div>
+            <div class="reading-value" id="latest-value">--</div>
+            <div class="reading-meta">
+                <div id="sensor-id">Sensor: --</div>
+                <div id="mode">Mode: --</div>
+                <div class="timestamp" id="timestamp">--</div>
+            </div>
+        </div>
+
+        <div class="status-card">
+            <h2>System Status</h2>
+            <div class="status-grid">
+                <div class="status-item">
+                    <div class="status-label">Connected</div>
+                    <div class="status-value" id="connected">--</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">Recording</div>
+                    <div class="status-value" id="recording">--</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">State</div>
+                    <div class="status-value" id="state">--</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">Rows Collected</div>
+                    <div class="status-value" id="rows">--</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>Fetching data every 500ms from <code id="api-url"></code></p>
+            <p><a href="/docs" target="_blank">API Documentation</a> | <a href="https://github.com/anthropics/claude-code" target="_blank">About</a></p>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        document.getElementById('api-url').textContent = API_BASE;
+
+        let lastError = null;
+
+        function showError(message) {
+            const container = document.getElementById('error-container');
+            if (message !== lastError) {
+                lastError = message;
+                container.innerHTML = `<div class="error">${message}</div>`;
+            }
+        }
+
+        function clearError() {
+            if (lastError !== null) {
+                lastError = null;
+                document.getElementById('error-container').innerHTML = '';
+            }
+        }
+
+        function formatTimestamp(ts) {
+            if (!ts) return '--';
+            try {
+                const date = new Date(ts);
+                return date.toLocaleString('en-US', {
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hour12: false
+                });
+            } catch (e) {
+                return ts;
+            }
+        }
+
+        async function fetchStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/sensor/status`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+
+                document.getElementById('connected').textContent = data.connected ? 'Yes' : 'No';
+                document.getElementById('connected').className = 'status-value ' + data.connected;
+
+                document.getElementById('recording').textContent = data.recording ? 'Yes' : 'No';
+                document.getElementById('recording').className = 'status-value ' + data.recording;
+
+                document.getElementById('state').textContent = data.state || '--';
+                document.getElementById('rows').textContent = data.rows.toLocaleString();
+
+                clearError();
+            } catch (error) {
+                showError(`Failed to fetch status: ${error.message}`);
+            }
+        }
+
+        async function fetchLatest() {
+            try {
+                const response = await fetch(`${API_BASE}/sensor/latest`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+
+                if (data && data.value !== undefined) {
+                    // Update reading display
+                    document.getElementById('latest-value').textContent = data.value.toFixed(3);
+                    document.getElementById('sensor-id').textContent = `Sensor: ${data.sensor_id || '--'}`;
+                    document.getElementById('mode').textContent = `Mode: ${data.mode || '--'}`;
+                    document.getElementById('timestamp').textContent = formatTimestamp(data.timestamp);
+
+                    // Add pulse effect
+                    const valueEl = document.getElementById('latest-value');
+                    valueEl.classList.remove('pulse');
+                    void valueEl.offsetWidth; // Trigger reflow
+                    valueEl.classList.add('pulse');
+
+                    clearError();
+                } else {
+                    document.getElementById('latest-value').textContent = 'No Data';
+                }
+            } catch (error) {
+                showError(`Failed to fetch latest reading: ${error.message}`);
+            }
+        }
+
+        // Initial fetch
+        fetchStatus();
+        fetchLatest();
+
+        // Poll every 500ms
+        setInterval(() => {
+            fetchStatus();
+            fetchLatest();
+        }, 500);
+    </script>
+</body>
+</html>
