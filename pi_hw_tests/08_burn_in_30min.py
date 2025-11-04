@@ -120,7 +120,7 @@ def main():
         last_report_time = start_time
         report_interval = 60.0  # Report every 60s
 
-        rate_estimator = RollingRateEstimator(window_size=50)
+        rate_estimator = RollingRateEstimator(window_seconds=30.0)
         sample_rates = []
 
         while True:
