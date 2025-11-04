@@ -66,15 +66,15 @@ POLLED_QUERY_PREFIX: Final[str] = ">"
 
 
 def make_polled_query_cmd(tag: str) -> str:
-    """Build polled mode query command: ><TAG>
+    """Build polled mode query command: ><TAG>*
 
     Args:
         tag: Single uppercase character A-Z
 
     Returns:
-        Command string (no CR appended)
+        Command string (no CR appended, ends with *)
     """
-    return f"{POLLED_QUERY_PREFIX}{tag}"
+    return f"{POLLED_QUERY_PREFIX}{tag}*"
 
 
 # ============================================================================

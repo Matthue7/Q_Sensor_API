@@ -859,8 +859,7 @@ class SensorController:
         Sends query command at poll_hz rate, reads response, parses, and buffers.
 
         Protocol (verified with logic analyzer):
-        - Query command format: `><TAG>` (e.g., `>A`) with NO CR terminator
-        - Response: Sensor echoes back '*' followed by data line
+        - Query command format: `><TAG>*` (e.g., `>A*`) with NO CR terminator
         - Response format: `<TAG><value>[,TempC][,Vin]` with CRLF terminator
         - TAG validation: Response TAG must match query TAG (strict check)
         - Timing: Device responds within readline timeout (default 0.5s)
@@ -879,27 +878,13 @@ class SensorController:
             cycle_start = time.time()
 
             try:
-                # Send query (>A format, no CR - verified with logic analyzer)
+                # Send query (>A* format, no CR - verified with logic analyzer)
                 self._transport.write_bytes(query_cmd.encode("ascii"))
 
-                # Read acknowledgment (sensor responds with '*')
-                ack = self._transport.readline()
-                if not ack:
-                    logger.warning("No acknowledgment to polled query, will retry")
-                    # Micro-fix #4: Use Event.wait for cancellable sleep
-                    if self._stop_event.wait(timeout=poll_period):
-                        break  # Stop event set during sleep
-                    continue
-
-                # Check for '*' acknowledgment
-                if ack.strip() != '*':
-                    logger.debug(f"Unexpected ack (expected '*'): {ack!r}")
-                    # Continue anyway - might be the data line itself
-
-                # Read actual data line with timeout
+                # Read response with timeout
                 line = self._transport.readline()
                 if not line:
-                    logger.warning("No data line after acknowledgment, will retry")
+                    logger.warning("No response to polled query, will retry")
                     # Micro-fix #4: Use Event.wait for cancellable sleep
                     if self._stop_event.wait(timeout=poll_period):
                         break  # Stop event set during sleep
