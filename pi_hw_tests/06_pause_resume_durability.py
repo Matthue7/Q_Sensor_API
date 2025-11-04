@@ -109,7 +109,7 @@ def main():
         if not wait_for_samples(controller, min_samples=3, timeout=5.0):
             raise TimeoutError("No samples received after start")
 
-        initial_count = controller.buffer.count()
+        initial_count = len(controller.read_buffer_snapshot())
         logger.info(f"✓ Initial buffer count: {initial_count}")
         metrics["initial_samples"] = initial_count
 
@@ -146,7 +146,7 @@ def main():
                 logger.error(f"✗ No samples after resume in cycle {cycle + 1}")
                 cycle_results.append(False)
             else:
-                post_resume_count = controller.buffer.count()
+                post_resume_count = len(controller.read_buffer_snapshot())
                 logger.info(f"✓ Samples received after resume: {post_resume_count}")
                 cycle_results.append(True)
 

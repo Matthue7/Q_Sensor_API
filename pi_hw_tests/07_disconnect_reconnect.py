@@ -109,7 +109,7 @@ def main():
         if not wait_for_samples(controller, min_samples=5, timeout=3.0):
             raise TimeoutError("No samples received in first connection")
 
-        samples_1 = controller.buffer.count()
+        samples_1 = len(controller.read_buffer_snapshot())
         logger.info(f"✓ Samples received: {samples_1}")
         metrics["samples_first_connection"] = samples_1
 
@@ -187,7 +187,7 @@ def main():
         if not wait_for_samples(controller, min_samples=5, timeout=3.0):
             raise TimeoutError("No samples received after reconnect")
 
-        samples_2 = controller.buffer.count()
+        samples_2 = len(controller.read_buffer_snapshot())
         logger.info(f"✓ Samples received: {samples_2}")
         metrics["samples_second_connection"] = samples_2
 
