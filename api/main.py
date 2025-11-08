@@ -40,7 +40,10 @@ API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", "8000"))
 DEFAULT_SERIAL_PORT = os.getenv("SERIAL_PORT", "/dev/ttyUSB0")
 DEFAULT_SERIAL_BAUD = int(os.getenv("SERIAL_BAUD", "9600"))
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
+CORS_ORIGINS = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000,http://blueos.local,http://blueos.local:80,http://blueos.local:3000,http://blueos.local:9150"
+).split(",")
 
 # Configure logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -77,6 +80,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files for webapp assets (CSS, JS, etc.)
+static_dir = Path(__file__).parent / "static"
+if static_dir.exists():
+    app.mount("/assets", StaticFiles(directory=str(static_dir / "webapp" / "assets")), name="assets")
+    logger.info(f"Static webapp assets mounted from {static_dir / 'webapp' / 'assets'}")
 
 # =============================================================================
 # Request/Response Models
@@ -333,7 +342,10 @@ async def set_config(config: Optional[ConfigRequest] = None):
 
 
 @app.post("/start")
-async def start_acquisition(poll_hz: float = Query(1.0, description="Poll rate for polled mode (Hz)")):
+async def start_acquisition(
+    poll_hz: float = Query(1.0, description="Poll rate for polled mode (Hz)"),
+    auto_record: bool = Query(True, description="Automatically start DataRecorder")
+):
     """Start data acquisition.
 
     Exits menu and starts acquisition in configured mode.
@@ -342,14 +354,15 @@ async def start_acquisition(poll_hz: float = Query(1.0, description="Poll rate f
 
     Args:
         poll_hz: Polling frequency for polled mode (default 1.0 Hz)
+        auto_record: Automatically start DataRecorder to store readings (default True)
 
     Returns:
-        {"status": "started", "mode": "..."}
+        {"status": "started", "mode": "...", "recording": bool}
 
     Raises:
         503: If not connected or already acquiring
     """
-    global _controller, _lock
+    global _controller, _store, _recorder, _lock
 
     if not _controller:
         raise HTTPException(status_code=503, detail="Not connected")
@@ -363,7 +376,19 @@ async def start_acquisition(poll_hz: float = Query(1.0, description="Poll rate f
 
         _controller.start_acquisition(poll_hz=poll_hz)
 
-        return {"status": "started", "mode": config.mode}
+        # Auto-start DataRecorder if requested (default True)
+        recording = False
+        if auto_record:
+            if not _store:
+                _store = DataStore(max_rows=100000, auto_flush_interval_s=None)
+
+            if _recorder is None or not _recorder.is_running():
+                logger.info("Auto-starting DataRecorder with poll_interval=0.2s")
+                _recorder = DataRecorder(_controller, _store, poll_interval_s=0.2)
+                _recorder.start()
+                recording = True
+
+        return {"status": "started", "mode": config.mode, "recording": recording}
 
 
 @app.post("/recording/start")
@@ -716,17 +741,6 @@ app.add_api_route("/recording/export/parquet", export_parquet, methods=["GET"])
 
 
 # =============================================================================
-# Static Files (Optional Test Page)
-# =============================================================================
-
-# Mount static files if directory exists
-static_dir = Path(__file__).parent / "static"
-if static_dir.exists():
-    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-    logger.info(f"Static files mounted from {static_dir}")
-
-
-# =============================================================================
 # WebSocket Streaming
 # =============================================================================
 
@@ -794,11 +808,39 @@ async def websocket_stream_alias(websocket: WebSocket):
 
 @app.get("/")
 async def root():
+    """Serve the React webapp."""
+    webapp_index = Path(__file__).parent / "static" / "webapp" / "index.html"
+    if webapp_index.exists():
+        return FileResponse(webapp_index)
+    else:
+        # Fallback health check if webapp not found
+        return {
+            "service": "Q-Sensor API",
+            "version": "1.0.0",
+            "status": "online"
+        }
+
+@app.get("/health")
+async def health():
     """Health check endpoint."""
     return {
         "service": "Q-Sensor API",
         "version": "1.0.0",
         "status": "online"
+    }
+
+
+@app.get("/register_service")
+async def register_service():
+    """BlueOS service discovery endpoint."""
+    return {
+        "name": "Q-Sensor API",
+        "description": "Q-Series sensor data acquisition and control",
+        "icon": "mdi-chart-line",
+        "company": "Biospherical Instruments Inc.",
+        "version": "1.0.0",
+        "webpage": "/",
+        "api": "/docs"
     }
 
 

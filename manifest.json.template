@@ -1,0 +1,87 @@
+{
+  "_comment": "BlueOS Extension Manifest Template (Kraken format)",
+  "_note": "This is a TEMPLATE for future BlueOS extension packaging. Not used yet.",
+  "_docs": "https://github.com/bluerobotics/BlueOS-extensions-repository",
+
+  "name": "Q-Sensor API",
+  "description": "Biospherical Q-Series sensor data acquisition and streaming",
+  "icon": "mdi-wave",
+  "company": "Biospherical Instruments Inc.",
+  "version": "1.0.0",
+  "website": "https://www.biospherical.com",
+  "support": "https://github.com/biospherical/q-sensor-api/issues",
+
+  "docker": {
+    "_comment": "Docker image to pull from registry (when published)",
+    "image": "biospherical/q-sensor-api:1.0.0",
+    "tag": "1.0.0",
+    "binds": {
+      "/usr/blueos/userdata/q_sensor": {
+        "bind": "/data",
+        "mode": "rw"
+      }
+    },
+    "network_mode": "host",
+    "devices": [
+      "/dev/ttyUSB0:/dev/ttyUSB0"
+    ],
+    "environment": {
+      "SERIAL_PORT": "/dev/ttyUSB0",
+      "SERIAL_BAUD": "9600",
+      "LOG_LEVEL": "INFO"
+    },
+    "restart_policy": {
+      "Name": "unless-stopped"
+    }
+  },
+
+  "permissions": {
+    "_comment": "Required system permissions",
+    "ExposedPorts": {
+      "9150/tcp": {}
+    },
+    "HostConfig": {
+      "Privileged": false,
+      "Devices": [
+        {
+          "PathOnHost": "/dev/ttyUSB0",
+          "PathInContainer": "/dev/ttyUSB0",
+          "CgroupPermissions": "rwm"
+        }
+      ]
+    }
+  },
+
+  "user_permissions": {
+    "_comment": "Permissions shown to user during installation",
+    "serial": "Access to USB serial devices for Q-Series sensor communication",
+    "network": "Host network access for API on port 9150",
+    "storage": "Persistent storage for sensor data exports"
+  },
+
+  "readme": "https://raw.githubusercontent.com/biospherical/q-sensor-api/main/README.md",
+  "links": [
+    {
+      "name": "API Documentation",
+      "url": "http://blueos.local:9150/docs"
+    },
+    {
+      "name": "Health Check",
+      "url": "http://blueos.local:9150/"
+    }
+  ],
+
+  "requirements": [
+    "BlueOS >= 1.0.0",
+    "Available serial port (USB or Ethernet)",
+    "Port 9150 not in use"
+  ],
+
+  "tags": [
+    "sensor",
+    "data-acquisition",
+    "oceanography",
+    "scientific",
+    "biospherical"
+  ]
+}

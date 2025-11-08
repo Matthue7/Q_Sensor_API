@@ -1,0 +1,26 @@
+{
+  "name": "Q-Sensor API",
+  "description": "Live Q-Series sensor data acquisition and streaming",
+  "icon": "mdi-chart-line",
+  "company": "Biospherical Instruments Inc.",
+  "version": "1.0.0",
+  "webpage": "/static/blueos-ui/",
+  "api": "/docs",
+  "new_page": false,
+  "works_in_relative_paths": true,
+  "author": "Biospherical Instruments Inc.",
+  "website": "https://www.biospherical.com",
+  "email": "support@biospherical.com",
+  "readme": "https://github.com/biospherical/q-sensor-api/blob/main/README.md",
+  "requirements": [
+    "Serial port access (USB or Ethernet)",
+    "Port 9150 available"
+  ],
+  "tags": [
+    "sensor",
+    "data-acquisition",
+    "oceanography",
+    "scientific",
+    "real-time"
+  ]
+}

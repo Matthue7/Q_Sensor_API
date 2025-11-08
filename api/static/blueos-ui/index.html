@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Q-Sensor Live Data</title>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+    <!-- Material Design Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@7.3.67/css/materialdesignicons.min.css">
+
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1><span class="mdi mdi-chart-line"></span> Q-Sensor Live Data</h1>
+            <div class="status-badge" id="status-badge">
+                <span class="mdi mdi-circle"></span>
+                <span id="status-text">Disconnected</span>
+            </div>
+        </header>
+
+        <div class="main-grid">
+            <!-- Current Value Display -->
+            <div class="card current-value">
+                <h2>Current Value</h2>
+                <div class="value-display" id="current-value">--</div>
+                <div class="value-unit">sensor units</div>
+            </div>
+
+            <!-- Stats Cards -->
+            <div class="card stats-card">
+                <h3><span class="mdi mdi-information-outline"></span> Connection</h3>
+                <div class="stat-item">
+                    <span class="stat-label">Sensor ID:</span>
+                    <span class="stat-value" id="sensor-id">--</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Mode:</span>
+                    <span class="stat-value" id="mode">--</span>
+                </div>
+            </div>
+
+            <div class="card stats-card">
+                <h3><span class="mdi mdi-chart-box-outline"></span> Statistics</h3>
+                <div class="stat-item">
+                    <span class="stat-label">Sample Rate:</span>
+                    <span class="stat-value" id="sample-rate">-- Hz</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Data Points:</span>
+                    <span class="stat-value" id="data-points">0</span>
+                </div>
+            </div>
+
+            <!-- Control Panel -->
+            <div class="card control-panel">
+                <h3><span class="mdi mdi-controller"></span> Controls</h3>
+                <div class="button-grid">
+                    <button id="btn-connect" class="btn btn-primary">
+                        <span class="mdi mdi-connection"></span> Connect
+                    </button>
+                    <button id="btn-start" class="btn btn-success" disabled>
+                        <span class="mdi mdi-play"></span> Start
+                    </button>
+                    <button id="btn-stop" class="btn btn-warning" disabled>
+                        <span class="mdi mdi-stop"></span> Stop
+                    </button>
+                    <button id="btn-disconnect" class="btn btn-danger" disabled>
+                        <span class="mdi mdi-close-network"></span> Disconnect
+                    </button>
+                </div>
+            </div>
+
+            <!-- Live Chart -->
+            <div class="card chart-container">
+                <h3><span class="mdi mdi-chart-timeline-variant"></span> Live Data Stream</h3>
+                <canvas id="data-chart"></canvas>
+            </div>
+        </div>
+
+        <footer>
+            <p>Q-Sensor API v1.0.0 | Biospherical Instruments Inc.</p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
