@@ -184,6 +184,128 @@ curl -X POST http://localhost:8000/disconnect
 
 See [docs/API_REFERENCE.md](docs/API_REFERENCE.md) for complete API documentation.
 
+### BlueOS Extension Deployment
+
+The Q-Sensor API can be deployed as a BlueOS extension on Raspberry Pi for integrated marine robotics applications.
+
+#### Features
+- **Service Discovery**: Automatically appears in BlueOS sidebar
+- **Integrated Web UI**: React webapp accessible via BlueOS interface
+- **Docker Deployment**: Optimized for ARMv7 (Raspberry Pi 4)
+- **USB Serial Access**: Automatic `/dev/ttyUSB0` device mapping
+- **Persistent Storage**: Data stored in `/usr/blueos/userdata/q_sensor/`
+- **Auto-start Recording**: DataRecorder starts automatically with acquisition
+
+#### Quick Deployment
+
+```bash
+# Build Docker image for Pi (from Mac/Linux)
+cd /Users/matthuewalsh/qseries-noise/Q_Sensor_API
+docker buildx build --platform linux/arm/v7 -t q-sensor-api:pi --load .
+
+# Transfer to Pi
+docker save q-sensor-api:pi -o ~/q-sensor-api-pi.tar
+scp ~/q-sensor-api-pi.tar pi@blueos.local:/tmp/
+
+# Deploy on Pi
+ssh pi@blueos.local << 'EOF'
+  docker load -i /tmp/q-sensor-api-pi.tar
+  docker stop q-sensor 2>/dev/null || true
+  docker rm q-sensor 2>/dev/null || true
+  docker run -d --name q-sensor \
+    --network host \
+    --device /dev/ttyUSB0:/dev/ttyUSB0 \
+    --group-add dialout \
+    -v /usr/blueos/userdata/q_sensor:/data \
+    -e SERIAL_PORT=/dev/ttyUSB0 \
+    -e SERIAL_BAUD=9600 \
+    -e LOG_LEVEL=INFO \
+    --restart unless-stopped \
+    q-sensor-api:pi
+EOF
+```
+
+#### Access Points
+
+Once deployed, the Q-Sensor API is accessible at:
+
+- **BlueOS Sidebar**: Click "Q-Sensor API" to open integrated webapp
+- **Direct Access**: `http://blueos.local:9150/`
+- **API Documentation**: `http://blueos.local:9150/docs`
+- **Service Metadata**: `http://blueos.local:9150/register_service`
+
+#### Configuration
+
+Environment variables (set in docker run command):
+
+- `SERIAL_PORT` - Serial device path (default: `/dev/ttyUSB0`)
+- `SERIAL_BAUD` - Baud rate (default: `9600`)
+- `LOG_LEVEL` - Logging level: DEBUG, INFO, WARNING, ERROR (default: `INFO`)
+- `CORS_ORIGINS` - Comma-separated CORS origins (default includes `blueos.local`)
+
+#### Web UI Build
+
+The integrated webapp is built from the Q_Web repository. To update:
+
+```bash
+# Build React webapp
+cd /Users/matthuewalsh/qseries-noise/Q_Web
+npm run build
+
+# Copy to API static directory
+cp -r dist/* ../Q_Sensor_API/api/static/webapp/
+
+# Rebuild Docker image (see above)
+```
+
+See [docs/WEBAPP_BUILD.md](docs/WEBAPP_BUILD.md) for detailed build documentation.
+
+#### Deployment Scripts
+
+The `scripts/` directory contains helper scripts:
+
+- `build_local.sh` - Build Docker image locally
+- `save_image.sh` - Export image to tarball
+- `pi_load_and_run.sh` - Deploy to Pi
+- `cleanup_pi.sh` - Remove old containers/images
+- `build_on_pi.sh` - Build directly on Pi (slow, ~100 min)
+
+#### Troubleshooting
+
+**Container not seeing sensor:**
+```bash
+# Verify USB device exists
+ssh pi@blueos.local 'ls -la /dev/ttyUSB*'
+
+# Check container device mapping
+ssh pi@blueos.local 'docker exec q-sensor ls -la /dev/ttyUSB*'
+
+# Verify dialout group membership
+ssh pi@blueos.local 'docker exec q-sensor groups'
+```
+
+**Webapp not loading:**
+```bash
+# Check container logs
+ssh pi@blueos.local 'docker logs --tail 50 q-sensor'
+
+# Verify static files exist
+ssh pi@blueos.local 'docker exec q-sensor ls -la /app/api/static/webapp/'
+
+# Test direct API access
+curl http://blueos.local:9150/health
+```
+
+**BlueOS not detecting service:**
+- Wait 5-10 seconds for BlueOS Helper scan
+- Refresh BlueOS page
+- Verify `/register_service` endpoint returns valid JSON:
+  ```bash
+  curl http://blueos.local:9150/register_service
+  ```
+
+See [docs/API_RUNBOOK_PI.md](docs/API_RUNBOOK_PI.md) for detailed deployment procedures.
+
 ### Pause and Resume
 
 ```python
