@@ -1,6 +1,6 @@
 # Q-Sensor API - BlueOS Extension
 
-A production-ready BlueOS extension providing real-time data acquisition and control for Biospherical Q-Series sensors (firmware 4.003, 2150 mode). Deploys as a Docker container on Raspberry Pi 4 with integrated web UI, REST API, and WebSocket streaming.
+A production-ready BlueOS extension providing real-time data acquisition and control for Biospherical Instruments Q-Series sensors (firmware 4.003, 2150 mode). Deploys as a Docker container on Raspberry Pi 4 with integrated web UI, REST API, and WebSocket streaming.
 
 ## Overview
 
