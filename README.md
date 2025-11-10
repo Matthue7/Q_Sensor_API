@@ -1,38 +1,226 @@
-# Q-Sensor Library
+# Q-Sensor API - BlueOS Extension
 
-Production-quality Python library for Biospherical Q-Series sensors running firmware 4.003 in Digital Output, Linear (2150 mode).
+A production-ready BlueOS extension providing real-time data acquisition and control for Biospherical Q-Series sensors (firmware 4.003, 2150 mode). Deploys as a Docker container on Raspberry Pi 4 with integrated web UI, REST API, and WebSocket streaming.
 
-## Features
+## Overview
 
-- **Clean Hardware Abstraction**: GUI-free HAL for serial communication
-- **Full Protocol Support**: Menu navigation, freerun streaming, polled queries
-- **DataFrame Recording Layer**: Real-time pandas DataFrame recording with CSV/Parquet export
-- **REST API (FastAPI)**: HTTP endpoints and WebSocket streaming for remote access
-- **Type-Safe API**: Complete type hints with Python 3.11+
-- **Thread-Safe Buffering**: Ring buffer for sensor readings + DataFrame storage
-- **Comprehensive Testing**: Unit tests with device simulator (no hardware required)
-- **Hardware Validation Suite**: 10 standalone scripts for operational testing on Raspberry Pi
-- **Production Ready**: Error handling, logging, state management
-- **Firmware-Aligned**: Verified against firmware source code (v4.003)
+The Q-Sensor API is a **self-contained BlueOS extension** that:
 
-## Installation
+- Runs a FastAPI service inside a Docker container on Raspberry Pi (ARMv7)
+- Provides browser-based sensor control via integrated React webapp
+- Streams real-time data through REST endpoints and WebSocket
+- Records data to pandas DataFrames with CSV/Parquet export
+- Automatically appears in the BlueOS sidebar via service discovery
+- Persists data to `/usr/blueos/userdata/q_sensor/`
 
-```bash
-pip install -e .
+**Target Platform**: Raspberry Pi 4 running BlueOS (ARM 32-bit)
+**Sensor Compatibility**: Q-Series firmware 4.003 in Digital Output, Linear (2150 mode)
+**Communication**: Serial (USB) or Ethernet connection
+
+## Architecture
+
+```
+BlueOS (Raspberry Pi 4)
+├── Docker Container: q-sensor-api
+│   ├── FastAPI Service (port 9150)
+│   │   ├── REST API endpoints (/sensor/*, /recording/*)
+│   │   ├── WebSocket streaming (/stream)
+│   │   ├── Service discovery (/register_service)
+│   │   └── Static file serving (React webapp)
+│   ├── q_sensor_lib (core sensor library)
+│   │   ├── SensorController (state machine)
+│   │   ├── Serial transport (pyserial)
+│   │   └── Thread-safe ring buffer
+│   └── data_store (DataFrame recording)
+│       ├── DataStore (pandas)
+│       └── DataRecorder (background polling)
+└── BlueOS Helper
+    └── Scans /register_service → adds to sidebar
 ```
 
-For development with testing tools:
+**Data Flow**:
+1. User clicks "Q-Sensor API" in BlueOS sidebar
+2. React webapp loads from `/static/webapp/`
+3. User clicks "Connect" → API calls sensor via `/dev/ttyUSB0`
+4. User clicks "Start" → Acquisition begins, DataRecorder polls sensor buffer
+5. Data flows: Sensor → Controller → RingBuffer → DataStore (pandas)
+6. Frontend polls `/sensor/latest` or subscribes to WebSocket `/stream`
+7. User exports data via `/recording/export/csv` or `/recording/export/parquet`
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed system design.
+
+## Quick Start (BlueOS Deployment)
+
+### Prerequisites
+
+- **Development Machine**: Mac or Linux with Docker Desktop
+- **Target Device**: Raspberry Pi 4 with BlueOS installed
+- **Network**: SSH access to Pi at `blueos.local`
+- **Sensor**: Q-Series connected via USB serial adapter
+
+### Build and Deploy
 
 ```bash
+# 1. Clone repository
+cd /Users/matthuewalsh/qseries-noise/Q_Sensor_API
+
+# 2. Build Docker image for ARMv7 (cross-compile from Mac/Linux)
+docker buildx build --platform linux/arm/v7 -t q-sensor-api:pi --load .
+
+# 3. Save image to tarball
+docker save q-sensor-api:pi -o ~/q-sensor-api-pi.tar
+
+# 4. Transfer to Pi
+scp ~/q-sensor-api-pi.tar pi@blueos.local:/tmp/
+
+# 5. Deploy on Pi
+ssh pi@blueos.local << 'EOF'
+  # Load image
+  docker load -i /tmp/q-sensor-api-pi.tar
+
+  # Stop old container (if exists)
+  docker stop q-sensor 2>/dev/null || true
+  docker rm q-sensor 2>/dev/null || true
+
+  # Run container
+  docker run -d --name q-sensor \
+    --network host \
+    --device /dev/ttyUSB0:/dev/ttyUSB0 \
+    --group-add dialout \
+    -v /usr/blueos/userdata/q_sensor:/data \
+    -e SERIAL_PORT=/dev/ttyUSB0 \
+    -e SERIAL_BAUD=9600 \
+    -e LOG_LEVEL=INFO \
+    --restart unless-stopped \
+    q-sensor-api:pi
+
+  # Verify running
+  docker ps | grep q-sensor
+EOF
+
+# 6. Access via BlueOS
+# Open http://blueos.local in browser
+# Click "Q-Sensor API" in sidebar → webapp opens
+```
+
+### Alternative: Build Directly on Pi
+
+For slow but simpler deployment (no cross-compilation):
+
+```bash
+# Use provided script
+./scripts/build_on_pi.sh
+
+# Takes ~100 minutes on Pi 4
+# Builds and runs container automatically
+```
+
+## Access Points
+
+Once deployed, the Q-Sensor API is accessible at:
+
+| Interface | URL | Description |
+|-----------|-----|-------------|
+| **BlueOS Sidebar** | Click "Q-Sensor API" | Opens integrated React webapp |
+| **Direct Webapp** | `http://blueos.local:9150/` | Main web interface |
+| **API Docs (Swagger)** | `http://blueos.local:9150/docs` | Interactive API documentation |
+| **Service Metadata** | `http://blueos.local:9150/register_service` | BlueOS discovery endpoint |
+| **Health Check** | `http://blueos.local:9150/health` | Container health status |
+
+## Using the Web Interface
+
+1. **Open webapp** - Click "Q-Sensor API" in BlueOS sidebar
+2. **Connect to sensor** - Click "Connect" (uses `/dev/ttyUSB0` by default)
+3. **Configure** (optional) - Set mode (freerun/polled), averaging, ADC rate
+4. **Start acquisition** - Click "Start" (auto-starts DataRecorder)
+5. **View data** - Live chart updates, latest reading displayed
+6. **Export data** - Download as CSV or Parquet when done
+7. **Stop acquisition** - Click "Stop"
+8. **Disconnect** - Click "Disconnect" to release serial port
+
+## REST API Examples
+
+### Basic Workflow (cURL)
+
+```bash
+# 1. Connect to sensor
+curl -X POST "http://blueos.local:9150/sensor/connect?port=/dev/ttyUSB0&baud=9600"
+# Response: {"status": "connected", "sensor_id": "serial ######   ", ...}
+
+# 2. Get current configuration
+curl http://blueos.local:9150/sensor/config
+# Response: {"averaging": 100, "adc_rate_hz": 125, "mode": "polled", ...}
+
+# 3. Configure sensor (optional)
+curl -X POST http://blueos.local:9150/sensor/config \
+  -H "Content-Type: application/json" \
+  -d '{"averaging": 125, "adc_rate_hz": 125, "mode": "freerun"}'
+
+# 4. Start acquisition (auto-starts DataRecorder)
+curl -X POST "http://blueos.local:9150/sensor/start?poll_hz=1.0"
+# Response: {"status": "started", "mode": "freerun", "recording": true}
+
+# 5. Get latest reading
+curl http://blueos.local:9150/sensor/latest
+# Response: {"value": 1.234567, "timestamp": "2025-11-10T12:34:56.789Z", ...}
+
+# 6. Get recent data (last 60 seconds)
+curl "http://blueos.local:9150/sensor/recent?seconds=60"
+# Response: {"readings": [{...}, {...}], "count": 58}
+
+# 7. Get statistics
+curl http://blueos.local:9150/sensor/stats
+# Response: {"row_count": 58, "start_time": "...", "est_sample_rate_hz": 1.02}
+
+# 8. Export data
+curl "http://blueos.local:9150/recording/export/csv" -o data.csv
+
+# 9. Stop acquisition
+curl -X POST http://blueos.local:9150/sensor/stop
+
+# 10. Disconnect
+curl -X POST http://blueos.local:9150/sensor/disconnect
+```
+
+### WebSocket Streaming (JavaScript)
+
+```javascript
+// Connect to WebSocket (from React webapp)
+const ws = new WebSocket("ws://blueos.local:9150/stream");
+
+ws.onopen = () => console.log("Connected to sensor stream");
+
+ws.onmessage = (event) => {
+  const reading = JSON.parse(event.data);
+  console.log(`Value: ${reading.data.value}, Time: ${reading.ts}`);
+  // Update chart, display, etc.
+};
+
+ws.onerror = (error) => console.error("WebSocket error:", error);
+
+ws.onclose = () => console.log("Stream disconnected");
+```
+
+## Python Library Usage (Development/Testing)
+
+The core `q_sensor_lib` can be used standalone for development and testing:
+
+### Installation
+
+```bash
+# Clone repository
+git clone https://github.com/biospherical/q-sensor-api.git
+cd q-sensor-api
+
+# Install in development mode
 pip install -e ".[dev]"
 ```
 
-## Quick Start
-
-### Freerun Mode (Continuous Streaming)
+### Freerun Mode Example
 
 ```python
 from q_sensor_lib import SensorController
+import time
 
 # Create controller and connect
 controller = SensorController()
@@ -47,12 +235,11 @@ controller.set_mode("freerun")
 controller.start_acquisition()
 
 # Read data continuously
-import time
-while True:
+for i in range(10):
     readings = controller.read_buffer_snapshot()
     if readings:
         latest = readings[-1]
-        print(f"Value: {latest.data['value']:.6f}")
+        print(f"Reading {i+1}: {latest.data['value']:.6f}")
     time.sleep(1.0)
 
 # Stop and disconnect
@@ -60,10 +247,11 @@ controller.stop()
 controller.disconnect()
 ```
 
-### Polled Mode (On-Demand Queries)
+### Polled Mode Example
 
 ```python
 from q_sensor_lib import SensorController
+import time
 
 controller = SensorController()
 controller.connect(port="/dev/ttyUSB0")
@@ -76,613 +264,444 @@ controller.set_adc_rate(125)
 # Start acquisition with 2 Hz polling
 controller.start_acquisition(poll_hz=2.0)
 
-# Readings are buffered automatically
-import time
+# Wait for data collection
 time.sleep(5.0)
 
+# Get buffered readings
 readings = controller.read_buffer_snapshot()
-print(f"Collected {len(readings)} readings")
+print(f"Collected {len(readings)} readings in 5 seconds")
 
-for reading in readings[-10:]:  # Last 10 readings
+for reading in readings[-5:]:  # Last 5 readings
     print(f"{reading.ts.isoformat()}: {reading.data['value']:.6f}")
 
 controller.disconnect()
 ```
 
-### DataFrame Recording (Pandas Integration)
-
-The `data_store` module provides real-time recording of sensor readings into pandas DataFrames:
+### DataFrame Recording Example
 
 ```python
 from q_sensor_lib import SensorController
 from data_store import DataStore, DataRecorder
+import time
 
 # Setup controller
 controller = SensorController()
-controller.connect("/dev/ttyUSB0")
+controller.connect(port="/dev/ttyUSB0")
 controller.set_mode("freerun")
-controller.set_averaging(125)
-controller.set_adc_rate(125)  # 1 Hz sample rate
+controller.start_acquisition()
 
-# Create DataFrame store and recorder
+# Create DataStore and DataRecorder
 store = DataStore(max_rows=10000)
 recorder = DataRecorder(controller, store, poll_interval_s=0.2)
 
-# Start acquisition and recording
-controller.start_acquisition()
+# Start recording
 recorder.start()
+print("Recording for 10 seconds...")
+time.sleep(10.0)
 
-# ... let it run for a while ...
+# Stop recording
+recorder.stop()
 
-# CRITICAL: Stop recorder BEFORE controller to avoid data loss
-recorder.stop(flush_format="csv")  # Exports to CSV automatically
-controller.stop()
-controller.disconnect()
-
-# Access recorded data
+# Get DataFrame
 df = store.get_dataframe()
-print(f"Recorded {len(df)} readings")
+print(f"\nRecorded {len(df)} rows")
 print(df.head())
 
-# Get statistics
-stats = store.get_stats()
-print(f"Sample rate: {stats['est_sample_rate_hz']:.2f} Hz")
-print(f"Duration: {stats['duration_s']:.1f} seconds")
+# Export to CSV
+output_path = store.export_csv("/tmp/sensor_data.csv")
+print(f"Exported to: {output_path}")
+
+controller.disconnect()
 ```
 
-**Key features:**
-- Thread-safe DataFrame storage with configurable max rows
-- Automatic NaN handling for optional fields (TempC, Vin)
-- Export to CSV or Parquet
-- Real-time statistics (sample rate, duration, row count)
-- Works identically for freerun and polled modes
+## Configuration
 
-See [docs/DATAFRAME_RECORDING.md](docs/DATAFRAME_RECORDING.md) for complete documentation.
+### Environment Variables
 
-### REST API (FastAPI)
+Set in `docker run` command or Docker Compose:
 
-The `api` module provides a REST and WebSocket interface:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SERIAL_PORT` | `/dev/ttyUSB0` | Serial device path |
+| `SERIAL_BAUD` | `9600` | Baud rate (9600 or 115200) |
+| `LOG_LEVEL` | `INFO` | Logging: DEBUG, INFO, WARNING, ERROR |
+| `CORS_ORIGINS` | (multiple) | Comma-separated allowed origins |
+
+Example with custom config:
 
 ```bash
-# Start API server
-uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
-
-# Interactive docs at http://localhost:8000/docs
+docker run -d --name q-sensor \
+  --network host \
+  --device /dev/ttyUSB1:/dev/ttyUSB1 \
+  -e SERIAL_PORT=/dev/ttyUSB1 \
+  -e SERIAL_BAUD=115200 \
+  -e LOG_LEVEL=DEBUG \
+  q-sensor-api:pi
 ```
 
-**Example API workflow:**
+### Sensor Modes
+
+**Freerun Mode**:
+- Sensor streams data continuously
+- Sample rate = `ADC_rate / averaging`
+- Example: 125 Hz ADC ÷ 125 averaging = 1 Hz output
+- Best for: Continuous monitoring, high-frequency data
+
+**Polled Mode**:
+- API polls sensor on demand
+- Requires TAG identifier (A-Z)
+- Poll frequency set by `poll_hz` parameter
+- Best for: Power efficiency, low-frequency sampling
+
+## Web UI Development
+
+The integrated React webapp is built from a separate repository:
+
+### Build Process
 
 ```bash
-# Connect
-curl -X POST "http://localhost:8000/connect?port=/dev/ttyUSB0&baud=9600"
-
-# Configure
-curl -X POST http://localhost:8000/config \
-  -H "Content-Type: application/json" \
-  -d '{"averaging": 125, "adc_rate_hz": 125, "mode": "freerun"}'
-
-# Start acquisition & recording
-curl -X POST http://localhost:8000/start
-curl -X POST http://localhost:8000/recording/start
-
-# Get data
-curl http://localhost:8000/latest
-curl "http://localhost:8000/recent?seconds=60"
-
-# WebSocket streaming (JavaScript)
-const ws = new WebSocket("ws://localhost:8000/stream");
-ws.onmessage = (event) => {
-    const reading = JSON.parse(event.data);
-    console.log(reading.value, reading.timestamp);
-};
-
-# Stop & disconnect
-curl -X POST "http://localhost:8000/recording/stop?flush=csv"
-curl -X POST http://localhost:8000/stop
-curl -X POST http://localhost:8000/disconnect
-```
-
-See [docs/API_REFERENCE.md](docs/API_REFERENCE.md) for complete API documentation.
-
-### BlueOS Extension Deployment
-
-The Q-Sensor API can be deployed as a BlueOS extension on Raspberry Pi for integrated marine robotics applications.
-
-#### Features
-- **Service Discovery**: Automatically appears in BlueOS sidebar
-- **Integrated Web UI**: React webapp accessible via BlueOS interface
-- **Docker Deployment**: Optimized for ARMv7 (Raspberry Pi 4)
-- **USB Serial Access**: Automatic `/dev/ttyUSB0` device mapping
-- **Persistent Storage**: Data stored in `/usr/blueos/userdata/q_sensor/`
-- **Auto-start Recording**: DataRecorder starts automatically with acquisition
-
-#### Quick Deployment
-
-```bash
-# Build Docker image for Pi (from Mac/Linux)
-cd /Users/matthuewalsh/qseries-noise/Q_Sensor_API
-docker buildx build --platform linux/arm/v7 -t q-sensor-api:pi --load .
-
-# Transfer to Pi
-docker save q-sensor-api:pi -o ~/q-sensor-api-pi.tar
-scp ~/q-sensor-api-pi.tar pi@blueos.local:/tmp/
-
-# Deploy on Pi
-ssh pi@blueos.local << 'EOF'
-  docker load -i /tmp/q-sensor-api-pi.tar
-  docker stop q-sensor 2>/dev/null || true
-  docker rm q-sensor 2>/dev/null || true
-  docker run -d --name q-sensor \
-    --network host \
-    --device /dev/ttyUSB0:/dev/ttyUSB0 \
-    --group-add dialout \
-    -v /usr/blueos/userdata/q_sensor:/data \
-    -e SERIAL_PORT=/dev/ttyUSB0 \
-    -e SERIAL_BAUD=9600 \
-    -e LOG_LEVEL=INFO \
-    --restart unless-stopped \
-    q-sensor-api:pi
-EOF
-```
-
-#### Access Points
-
-Once deployed, the Q-Sensor API is accessible at:
-
-- **BlueOS Sidebar**: Click "Q-Sensor API" to open integrated webapp
-- **Direct Access**: `http://blueos.local:9150/`
-- **API Documentation**: `http://blueos.local:9150/docs`
-- **Service Metadata**: `http://blueos.local:9150/register_service`
-
-#### Configuration
-
-Environment variables (set in docker run command):
-
-- `SERIAL_PORT` - Serial device path (default: `/dev/ttyUSB0`)
-- `SERIAL_BAUD` - Baud rate (default: `9600`)
-- `LOG_LEVEL` - Logging level: DEBUG, INFO, WARNING, ERROR (default: `INFO`)
-- `CORS_ORIGINS` - Comma-separated CORS origins (default includes `blueos.local`)
-
-#### Web UI Build
-
-The integrated webapp is built from the Q_Web repository. To update:
-
-```bash
-# Build React webapp
+# Navigate to React app source
 cd /Users/matthuewalsh/qseries-noise/Q_Web
+
+# Install dependencies (first time)
+npm install
+
+# Build production bundle
 npm run build
 
 # Copy to API static directory
 cp -r dist/* ../Q_Sensor_API/api/static/webapp/
 
-# Rebuild Docker image (see above)
+# Rebuild Docker image
+cd ../Q_Sensor_API
+docker buildx build --platform linux/arm/v7 -t q-sensor-api:pi --load .
+```
+
+### Local Development
+
+```bash
+# Terminal 1: Run API server
+cd Q_Sensor_API
+uvicorn api.main:app --reload --port 9150
+
+# Terminal 2: Run React dev server
+cd Q_Web
+npm run dev
+# Opens at http://localhost:3000
+# Proxies API calls to localhost:9150
 ```
 
 See [docs/WEBAPP_BUILD.md](docs/WEBAPP_BUILD.md) for detailed build documentation.
-
-#### Deployment Scripts
-
-The `scripts/` directory contains helper scripts:
-
-- `build_local.sh` - Build Docker image locally
-- `save_image.sh` - Export image to tarball
-- `pi_load_and_run.sh` - Deploy to Pi
-- `cleanup_pi.sh` - Remove old containers/images
-- `build_on_pi.sh` - Build directly on Pi (slow, ~100 min)
-
-#### Troubleshooting
-
-**Container not seeing sensor:**
-```bash
-# Verify USB device exists
-ssh pi@blueos.local 'ls -la /dev/ttyUSB*'
-
-# Check container device mapping
-ssh pi@blueos.local 'docker exec q-sensor ls -la /dev/ttyUSB*'
-
-# Verify dialout group membership
-ssh pi@blueos.local 'docker exec q-sensor groups'
-```
-
-**Webapp not loading:**
-```bash
-# Check container logs
-ssh pi@blueos.local 'docker logs --tail 50 q-sensor'
-
-# Verify static files exist
-ssh pi@blueos.local 'docker exec q-sensor ls -la /app/api/static/webapp/'
-
-# Test direct API access
-curl http://blueos.local:9150/health
-```
-
-**BlueOS not detecting service:**
-- Wait 5-10 seconds for BlueOS Helper scan
-- Refresh BlueOS page
-- Verify `/register_service` endpoint returns valid JSON:
-  ```bash
-  curl http://blueos.local:9150/register_service
-  ```
-
-See [docs/API_RUNBOOK_PI.md](docs/API_RUNBOOK_PI.md) for detailed deployment procedures.
-
-### Pause and Resume
-
-```python
-controller = SensorController()
-controller.connect(port="/dev/ttyUSB0")
-controller.set_mode("freerun")
-controller.start_acquisition()
-
-# Collect data for 10 seconds
-time.sleep(10.0)
-
-# Pause acquisition (enters menu)
-controller.pause()
-
-# Analyze data
-readings = controller.read_buffer_snapshot()
-print(f"Collected {len(readings)} readings")
-
-# Resume acquisition
-controller.resume()
-
-# Continue collecting
-time.sleep(10.0)
-
-controller.disconnect()
-```
-
-## API Reference
-
-### SensorController
-
-Main class for controlling the sensor.
-
-#### Connection
-
-```python
-controller.connect(port: str, baud: int = 9600) -> None
-```
-Opens serial port, enters config menu, reads current configuration.
-
-```python
-controller.disconnect() -> None
-```
-Stops acquisition, closes port, cleans up resources.
-
-#### Configuration
-
-```python
-controller.get_config() -> SensorConfig
-```
-Returns current configuration (must be in CONFIG_MENU state).
-
-```python
-controller.set_averaging(n: int) -> SensorConfig
-```
-Set number of readings to average (1-65535).
-
-```python
-controller.set_adc_rate(rate_hz: int) -> SensorConfig
-```
-Set ADC sample rate. Valid: {4, 8, 16, 33, 62, 125, 250, 500}.
-
-```python
-controller.set_mode(
-    mode: Literal["freerun", "polled"],
-    tag: Optional[str] = None
-) -> SensorConfig
-```
-Set operating mode. TAG required for polled (single uppercase A-Z).
-
-#### Acquisition Control
-
-```python
-controller.start_acquisition(poll_hz: float = 1.0) -> None
-```
-Exit menu and start data acquisition. `poll_hz` used only in polled mode.
-
-```python
-controller.pause() -> None
-```
-Pause acquisition and enter menu (from freerun/polled).
-
-```python
-controller.resume() -> None
-```
-Resume acquisition from paused state.
-
-```python
-controller.stop() -> None
-```
-Stop acquisition and return to CONFIG_MENU.
-
-#### Data Access
-
-```python
-controller.read_buffer_snapshot() -> List[Reading]
-```
-Get copy of all buffered readings (thread-safe).
-
-```python
-controller.clear_buffer() -> None
-```
-Clear all buffered readings.
-
-#### Properties
-
-```python
-controller.state -> ConnectionState
-```
-Current state: DISCONNECTED, CONFIG_MENU, ACQ_FREERUN, ACQ_POLLED, PAUSED.
-
-```python
-controller.sensor_id -> str
-```
-Sensor serial number.
-
-### Data Models
-
-#### SensorConfig
-
-```python
-@dataclass
-class SensorConfig:
-    averaging: int              # 1-65535
-    adc_rate_hz: int           # {4,8,16,33,62,125,250,500}
-    mode: Literal["freerun", "polled"]
-    tag: Optional[str]         # A-Z for polled
-    include_temp: bool
-    include_vin: bool
-    preamble: str
-    calfactor: float
-    serial_number: str
-    firmware_version: str
-```
-
-#### Reading
-
-```python
-@dataclass
-class Reading:
-    ts: datetime               # UTC timestamp
-    sensor_id: str            # Sensor serial number
-    mode: Literal["freerun", "polled"]
-    data: Dict[str, float]    # Keys: "value", "TempC"?, "Vin"?
-```
-
-Data dictionary always contains `"value"`. Optional keys:
-- `"TempC"`: Temperature in Celsius (if enabled in config)
-- `"Vin"`: Line voltage in volts (if enabled in config)
-
-## Advanced Usage
-
-### Custom Buffer Size
-
-```python
-# Create controller with larger buffer (default is 1000)
-controller = SensorController(buffer_size=5000)
-```
-
-### High-Speed Polled Acquisition
-
-```python
-controller.set_averaging(10)    # Fast averaging
-controller.set_adc_rate(125)    # 125 Hz ADC
-controller.set_mode("polled", tag="A")
-
-# Poll at 10 Hz (every 100ms)
-controller.start_acquisition(poll_hz=10.0)
-```
-
-### Error Handling
-
-```python
-from q_sensor_lib.errors import (
-    MenuTimeout,
-    InvalidConfigValue,
-    SerialIOError,
-)
-
-try:
-    controller.connect(port="/dev/ttyUSB0")
-except SerialIOError as e:
-    print(f"Failed to connect: {e}")
-
-try:
-    controller.set_averaging(100000)  # Too large
-except InvalidConfigValue as e:
-    print(f"Invalid config: {e}")
-
-try:
-    controller.start_acquisition()
-except MenuTimeout as e:
-    print(f"Device not responding: {e}")
-```
-
-### Logging
-
-Enable debug logging to see protocol details:
-
-```python
-import logging
-
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-
-controller = SensorController()
-controller.connect(port="/dev/ttyUSB0")
-# Detailed logs of menu navigation, commands, responses
-```
 
 ## Testing
 
 ### Unit Tests (No Hardware Required)
 
-Run all unit tests with FakeSerial simulator:
-
 ```bash
+# Install dev dependencies
+pip install -e ".[dev]"
+
+# Run full test suite
 pytest
-```
 
-Run with coverage:
+# Run with coverage
+pytest --cov=q_sensor_lib --cov=api --cov=data_store
 
-```bash
-pytest --cov=q_sensor_lib --cov-report=html
-```
-
-Run specific test file:
-
-```bash
+# Run specific test file
 pytest tests/test_freerun_stream.py -v
+
+# Run with timeout (prevents hanging tests)
+pytest --timeout=10
 ```
 
-### Hardware Validation Tests (Raspberry Pi)
+The test suite uses `FakeSerial` - a complete device simulator that mimics firmware 4.003 behavior. No physical sensor required.
 
-For operational validation on real hardware, use the standalone test scripts in `pi_hw_tests/`:
+### Hardware Validation (Requires Real Sensor)
 
 ```bash
-# Environment check
-python3 pi_hw_tests/00_env_check.py
+cd pi_hw_tests
 
-# Connection test
-python3 pi_hw_tests/01_connect_and_identify.py --port /dev/ttyUSB0
+# Run individual test
+python 02_freerun_smoke.py --port /dev/ttyUSB0
 
-# Freerun smoke test (10s acquisition)
-python3 pi_hw_tests/02_freerun_smoke.py --port /dev/ttyUSB0
+# Run in fake mode (dry-run, no hardware)
+python 02_freerun_smoke.py --fake
 
-# Run all tests
-for script in pi_hw_tests/0*.py; do
-    python3 "$script" --port /dev/ttyUSB0 || break
-done
+# All tests support --fake for CI/CD
 ```
 
-All scripts support `--fake` mode for dry-run testing without hardware:
+Available hardware tests:
+- `00_env_check.py` - Python version, dependencies, ports
+- `01_connect_and_identify.py` - Connection and sensor ID
+- `02_freerun_smoke.py` - 10s freerun acquisition
+- `03_polled_smoke.py` - 10s polled acquisition
+- `04_menu_consistency.py` - Menu navigation robustness
+- `05_temp_vin_presence.py` - Optional fields (TempC, Vin)
+- `06_pause_resume_durability.py` - Pause/resume cycles
+- `07_disconnect_reconnect.py` - Connection resilience
+- `08_burn_in_30min.py` - 30-minute continuous operation
+- `09_export_throughput.py` - DataFrame export performance
+
+### Local API Testing (Mac/Linux)
 
 ```bash
-python3 pi_hw_tests/02_freerun_smoke.py --fake
+# Start API server
+uvicorn api.main:app --reload --port 9150
+
+# Open browser
+open http://localhost:9150/docs
+
+# Test with FakeSerial (simulated sensor)
+# In Swagger UI:
+# 1. POST /sensor/connect with port="FAKE"
+# 2. POST /sensor/start
+# 3. GET /sensor/latest (should return simulated data)
 ```
-
-See [pi_hw_tests/README.md](pi_hw_tests/README.md) for complete documentation on:
-- Test coverage and expected metrics
-- Troubleshooting (permissions, ports, menu timeouts)
-- Advanced usage (custom durations, burn-in tests, export validation)
-- Output locations (`./pi_hw_tests/out/` for data, `./pi_hw_tests/logs/` for logs)
-
-## Protocol Reference
-
-This library implements the complete serial protocol for firmware 4.003 as documented in `docs/00_Serial_protocol_2150.md`.
-
-Key protocol details:
-- **Input terminator**: CR (0x0D)
-- **Output terminator**: CRLF (0x0D 0x0A)
-- **Menu entry**: ESC (0x1B) or '?'
-- **Exit menu**: 'X' (triggers device reset)
-- **Polled init**: `*<TAG>Q000!`
-- **Polled query**: `><TAG>`
-
-## Architecture
-
-```
-q_sensor_lib/
-   __init__.py          # Public API
-   models.py            # Data classes (SensorConfig, Reading)
-   errors.py            # Custom exceptions
-   protocol.py          # Wire protocol constants and patterns
-   parsing.py           # Pure functions for parsing responses
-   transport.py         # Serial port wrapper
-   ring_buffer.py       # Thread-safe FIFO buffer
-   controller.py        # Main controller with state machine
-
-fakes/
-   fake_serial.py       # Device simulator for testing
-
-tests/
-   test_connect_and_menu.py
-   test_config_set_get.py
-   test_freerun_stream.py
-   test_polled_sequence.py
-   test_pause_resume_stop.py
-   test_error_paths.py
-```
-
-## Thread Safety
-
-- **Ring buffer**: Fully thread-safe (uses Lock)
-- **Reader threads**: Single background thread per acquisition mode
-- **Controller state**: Protected by state lock for transitions
-- **Data access**: `read_buffer_snapshot()` returns a copy (safe to iterate)
-
-## Performance Considerations
-
-### Freerun Mode
-- Achieves native sensor sample rate (e.g., 125Hz/125avg = 1 Hz)
-- Reader thread parses lines as fast as they arrive
-- Ring buffer automatically discards oldest when full
-
-### Polled Mode
-- Poll rate configurable 1-15 Hz (hardware limit ~125 Hz / averaging)
-- Each query blocks briefly for response (~10-50ms typical)
-- Slower rates (<1 Hz) may miss occasional samples due to timing variance
-
-### Buffer Sizing
-- Default 1000 readings = ~16 minutes at 1 Hz
-- Increase for longer unattended runs
-- Decrease for memory-constrained systems
 
 ## Troubleshooting
 
-### Device Not Responding
+### Container Not Seeing Sensor
 
-```python
-# Check serial port permissions
-# Linux: sudo usermod -a -G dialout $USER
+```bash
+# 1. Verify USB device exists on Pi
+ssh pi@blueos.local 'ls -la /dev/ttyUSB*'
+# Should show: /dev/ttyUSB0
 
-# Verify baud rate matches device config
-controller.connect(port="/dev/ttyUSB0", baud=9600)
+# 2. Check device mapping in container
+ssh pi@blueos.local 'docker exec q-sensor ls -la /dev/ttyUSB*'
+# Should show: /dev/ttyUSB0
 
-# Enable debug logging
-import logging
-logging.basicConfig(level=logging.DEBUG)
+# 3. Verify dialout group membership
+ssh pi@blueos.local 'docker exec q-sensor groups'
+# Should include: dialout
+
+# 4. Check container logs
+ssh pi@blueos.local 'docker logs --tail 100 q-sensor'
+# Look for permission errors or connection issues
 ```
 
-### No Readings in Polled Mode
+### Webapp Not Loading
 
-```python
-# Ensure TAG matches device config
-config = controller.get_config()
-print(f"Device TAG: {config.tag}")
+```bash
+# 1. Verify container is running
+ssh pi@blueos.local 'docker ps | grep q-sensor'
 
-# Verify polled init sent (check logs)
-# Should see: "Sent polled init command: *AQ000!"
+# 2. Check static files exist
+ssh pi@blueos.local 'docker exec q-sensor ls -la /app/api/static/webapp/'
+# Should show: index.html, assets/
 
-# Try longer wait for averaging to fill
-import time
-time.sleep(config.sample_period_s + 1.0)
+# 3. Test direct API access
+curl http://blueos.local:9150/health
+# Should return: {"service": "Q-Sensor API", "version": "1.0.0", "status": "online"}
+
+# 4. Check browser console (F12)
+# Look for 404 errors on assets or API calls
 ```
 
-### Readings Stop Arriving
+### Data Not Appearing in UI
 
-```python
-# Check connection state
-print(controller.state)
+```bash
+# 1. Check sensor connection status
+curl http://blueos.local:9150/sensor/status
+# "connected": true, "recording": true
 
-# Verify device didn't reset unexpectedly
-# (Look for power-on banner in logs)
+# 2. Verify DataRecorder is running
+curl http://blueos.local:9150/sensor/stats
+# "row_count" should be > 0
 
-# Try pause/resume to recover
-controller.pause()
-controller.resume()
+# 3. Check latest reading
+curl http://blueos.local:9150/sensor/latest
+# Should return reading object (not empty {})
+
+# 4. Review container logs for errors
+ssh pi@blueos.local 'docker logs --tail 50 q-sensor | grep ERROR'
 ```
+
+### BlueOS Not Detecting Service
+
+```bash
+# 1. Verify /register_service endpoint
+curl http://blueos.local:9150/register_service
+# Should return JSON with name, icon, webpage, etc.
+
+# 2. Wait for BlueOS Helper scan (runs every 5-10 seconds)
+# Refresh BlueOS page in browser
+
+# 3. Check BlueOS Helper logs
+ssh pi@blueos.local 'docker logs blueos-core | grep -i "q-sensor"'
+
+# 4. Restart BlueOS Helper (if needed)
+ssh pi@blueos.local 'docker restart blueos-core'
+```
+
+### Build Failures
+
+```bash
+# pandas/numpy compilation errors on ARMv7:
+# - Ensure using Python 3.10 (not 3.11)
+# - Verify pandas==1.3.5 (not 2.x)
+# - Use full python:3.10 image (not slim)
+
+# Cross-compilation issues:
+docker buildx create --use
+docker buildx inspect --bootstrap
+
+# Cache issues:
+docker buildx build --no-cache --platform linux/arm/v7 ...
+```
+
+## Repository Structure
+
+```
+Q_Sensor_API/
+├── api/                        # FastAPI REST/WebSocket server
+│   ├── main.py                # API entry point (888 lines)
+│   └── static/                # Web UI assets
+│       ├── webapp/            # React production build
+│       └── blueos-ui/         # Simple Chart.js UI
+├── q_sensor_lib/              # Core sensor library (1,848 LOC)
+│   ├── controller.py          # Main SensorController class
+│   ├── transport.py           # Serial port wrapper
+│   ├── protocol.py            # Wire protocol constants
+│   ├── parsing.py             # Response parsers
+│   ├── models.py              # Data models
+│   ├── errors.py              # Custom exceptions
+│   └── ring_buffer.py         # Thread-safe buffer
+├── data_store/                # DataFrame recording layer
+│   ├── store.py               # DataStore/DataRecorder
+│   └── schemas.py             # DataFrame schema
+├── fakes/                     # Test infrastructure
+│   └── fake_serial.py         # Device simulator (729 lines)
+├── tests/                     # Unit tests (2,729 LOC)
+│   ├── test_*_*.py            # pytest test files
+│   └── __init__.py
+├── pi_hw_tests/               # Hardware validation
+│   ├── 00_env_check.py        # Environment check
+│   ├── 01-09_*.py             # 10 validation scripts
+│   ├── common.py              # Shared utilities
+│   ├── out/                   # Test data output
+│   └── logs/                  # Test logs
+├── examples/                  # Demo scripts
+│   ├── freerun_demo.py        # Freerun mode example
+│   ├── polled_demo.py         # Polled mode example
+│   └── pause_resume_demo.py   # Pause/resume example
+├── tools/                     # Diagnostic utilities
+│   ├── debug_serial.py        # Serial port debugger
+│   └── diagnose_connection.py # Connection diagnostic
+├── scripts/                   # Deployment scripts
+│   ├── build_local.sh         # Build Docker image
+│   ├── save_image.sh          # Export to tarball
+│   ├── pi_load_and_run.sh     # Deploy to Pi
+│   ├── cleanup_pi.sh          # Clean Pi artifacts
+│   └── build_on_pi.sh         # Build on Pi directly
+├── docs/                      # Documentation
+│   ├── ARCHITECTURE.md        # System design
+│   ├── API_REFERENCE.md       # Complete API docs
+│   ├── WEBAPP_BUILD.md        # Web UI build guide
+│   ├── DATAFRAME_RECORDING.md # DataFrame usage
+│   └── *.md                   # Protocol specs, guides
+├── Dockerfile                 # Docker image definition
+├── pyproject.toml             # Package metadata
+├── requirements.txt           # Python dependencies
+├── metadata.json              # BlueOS extension metadata
+├── manifest.json.template     # BlueOS Kraken template
+├── CHANGELOG.md               # Version history
+└── README.md                  # This file
+```
+
+## API Reference
+
+See [docs/API_REFERENCE.md](docs/API_REFERENCE.md) for complete endpoint documentation.
+
+### Key Endpoints
+
+**Sensor Control**:
+- `POST /sensor/connect` - Connect to sensor
+- `POST /sensor/disconnect` - Disconnect from sensor
+- `POST /sensor/config` - Get/set configuration
+- `POST /sensor/start` - Start acquisition (auto-starts DataRecorder)
+- `POST /sensor/stop` - Stop acquisition
+- `POST /sensor/pause` - Pause acquisition
+- `POST /sensor/resume` - Resume acquisition
+- `GET /sensor/status` - Get connection/acquisition status
+
+**Data Access**:
+- `GET /sensor/latest` - Get most recent reading
+- `GET /sensor/recent?seconds=60` - Get recent readings
+- `GET /sensor/stats` - Get DataFrame statistics
+- `WS /stream` - WebSocket real-time stream
+
+**Recording**:
+- `POST /recording/start` - Start DataRecorder (manual)
+- `POST /recording/stop` - Stop DataRecorder
+- `GET /recording/export/csv` - Export as CSV
+- `GET /recording/export/parquet` - Export as Parquet
+
+**Service**:
+- `GET /` - Web UI (React webapp)
+- `GET /health` - Health check
+- `GET /register_service` - BlueOS service discovery
+- `GET /docs` - Swagger UI
+
+## Features
+
+- ✅ **BlueOS Integration** - Automatic sidebar registration, web UI
+- ✅ **Docker Deployment** - Optimized for ARMv7 Raspberry Pi 4
+- ✅ **Real-time Streaming** - WebSocket and REST polling
+- ✅ **DataFrame Recording** - pandas integration with CSV/Parquet export
+- ✅ **Dual Acquisition Modes** - Freerun (continuous) and polled (on-demand)
+- ✅ **Thread-Safe Design** - Ring buffer, concurrent access
+- ✅ **Comprehensive Testing** - Unit tests + hardware validation suite
+- ✅ **Type Safety** - Full type hints with mypy strict mode
+- ✅ **Production Ready** - Error handling, logging, state management
+- ✅ **Firmware Aligned** - Verified against firmware v4.003 source code
+
+## Technical Specifications
+
+**Language**: Python 3.10+
+**Framework**: FastAPI 0.104+
+**Frontend**: React 18 + TypeScript (Vite)
+**Data**: pandas 1.3.5 (ARMv7 compatible)
+**Transport**: pyserial 3.5+
+**Container**: Docker (linux/arm/v7)
+**Platform**: BlueOS on Raspberry Pi 4
+**Protocol**: Serial (9600/115200 baud) or Ethernet
+**Sensor**: Q-Series firmware 4.003, 2150 mode
+
+## License
+
+MIT License - See LICENSE file for details
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make changes and add tests
+4. Run test suite (`pytest`)
+5. Commit changes (`git commit -m 'Add amazing feature'`)
+6. Push to branch (`git push origin feature/amazing-feature`)
+7. Open a Pull Request
+
+## Support
+
+- **Issues**: [GitHub Issues](https://github.com/biospherical/q-sensor-api/issues)
+- **Email**: support@biospherical.com
+- **Documentation**: [docs/](docs/)
+- **Protocol Spec**: [docs/00_Serial_protocol_2150.md](docs/00_Serial_protocol_2150.md)
 
 ## Changelog
 
-### 0.1.0 (2025-01-XX)
-- Initial release
-- Freerun and polled mode support
-- Complete menu navigation
-- Comprehensive test suite with FakeSerial
-- Type-safe API with full annotations
+See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
+
+## Authors
+
+**Biospherical Instruments Inc.**
+- Website: https://www.biospherical.com
+- Email: support@biospherical.com
+
+## Acknowledgments
+
+- BlueOS team for extension framework
+- FastAPI for async HTTP/WebSocket support
+- pandas for DataFrame capabilities
+- pytest for comprehensive testing framework
