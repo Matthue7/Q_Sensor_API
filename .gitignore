@@ -11,6 +11,8 @@ dist/
 .mypy_cache/
 .coverage
 htmlcov/
+.claude/
+claude/
 
 # Virtual envs
 .venv/
