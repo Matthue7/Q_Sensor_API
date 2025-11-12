@@ -18,6 +18,7 @@ EXPOSE 9150
 ENV SERIAL_PORT=/dev/ttyUSB0
 ENV SERIAL_BAUD=9600
 ENV LOG_LEVEL=INFO
+ENV CHUNK_RECORDING_PATH=/data/qsensor_recordings
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

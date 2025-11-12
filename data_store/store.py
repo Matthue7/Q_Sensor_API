@@ -442,3 +442,290 @@ class DataRecorder:
                 time.sleep(0.5)
 
         logger.info("Recorder loop stopped")
+
+
+class ChunkedDataStore:
+    """Chunked CSV writer for live mirroring to topside.
+
+    Writes rolling CSV chunks with atomic .tmp → rename(), maintains manifest.json.
+    Designed for reliable live mirroring: chunks are only visible after finalized.
+    """
+
+    def __init__(
+        self,
+        session_id: str,
+        base_path: Path,
+        roll_interval_s: float = 60.0,
+        target_chunk_mb: float = 2.0,
+    ) -> None:
+        """Initialize chunked store for a recording session.
+
+        Args:
+            session_id: Unique session identifier
+            base_path: Parent directory for recordings (e.g., /data/qsensor_recordings)
+            roll_interval_s: Time-based roll interval (15-300s, default 60s)
+            target_chunk_mb: Target chunk size in MB (1-5, default 2)
+        """
+        self._lock = RLock()
+        self._session_id = session_id
+        self._base_path = Path(base_path)
+        self._session_dir = self._base_path / session_id
+        self._roll_interval = max(15.0, min(300.0, roll_interval_s))
+        self._target_bytes = int(target_chunk_mb * 1024 * 1024)
+
+        # State
+        self._chunk_index = 0
+        self._current_file: Optional[object] = None  # TextIOWrapper
+        self._current_path: Optional[Path] = None
+        self._chunk_start_time: Optional[float] = None
+        self._total_rows = 0
+        self._current_chunk_rows = 0
+        self._current_chunk_bytes = 0
+
+        # Initialize session directory and manifest
+        self._session_dir.mkdir(parents=True, exist_ok=True)
+        self._manifest_path = self._session_dir / "manifest.json"
+        self._init_manifest()
+
+        logger.info(
+            f"ChunkedDataStore initialized: session={session_id}, "
+            f"roll_interval={self._roll_interval}s, target_size={target_chunk_mb}MB"
+        )
+
+    def _init_manifest(self) -> None:
+        """Initialize or load existing manifest."""
+        import json
+        from datetime import datetime, timezone
+
+        if self._manifest_path.exists():
+            # Load existing manifest
+            with open(self._manifest_path, 'r') as f:
+                manifest = json.load(f)
+                self._chunk_index = manifest.get("next_chunk_index", 0)
+                self._total_rows = manifest.get("total_rows", 0)
+                logger.debug(f"Loaded manifest: next_index={self._chunk_index}, total_rows={self._total_rows}")
+        else:
+            # Create new manifest
+            manifest = {
+                "session_id": self._session_id,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "next_chunk_index": 0,
+                "total_rows": 0,
+                "total_bytes": 0,
+                "chunks": []
+            }
+            with open(self._manifest_path, 'w') as f:
+                json.dump(manifest, f, indent=2)
+            logger.debug("Created new manifest")
+
+    def append_readings(self, readings: Iterable[Reading]) -> None:
+        """Append multiple readings (DataRecorder interface compatibility).
+
+        Args:
+            readings: Iterable of Reading instances
+        """
+        if not readings:
+            return
+
+        rows = [reading_to_row(r) for r in readings]
+        for row in rows:
+            self._append_row(row)
+
+    def _append_row(self, row: dict) -> None:
+        """Append a single reading row.
+
+        Opens a new chunk file if needed, writes CSV row, checks roll condition.
+
+        Args:
+            row: Dictionary with schema keys (timestamp, sensor_id, mode, value, TempC, Vin)
+        """
+        import csv
+        import time
+
+        with self._lock:
+            # Open new chunk if needed
+            if self._current_file is None:
+                self._open_new_chunk()
+
+            # Write row
+            assert self._current_file is not None
+            writer = csv.DictWriter(self._current_file, fieldnames=list(SCHEMA.keys()))
+            writer.writerow(row)
+
+            # Update counters
+            self._current_chunk_rows += 1
+            self._total_rows += 1
+            # Approximate row size (CSV text length)
+            row_size = sum(len(str(v)) for v in row.values()) + len(row) + 1  # +commas +newline
+            self._current_chunk_bytes += row_size
+
+            # Check if roll is needed
+            now = time.time()
+            self.roll_if_needed(now)
+
+    def _open_new_chunk(self) -> None:
+        """Open a new chunk file with CSV header."""
+        import csv
+        import time
+
+        # Generate chunk filename
+        chunk_name = f"chunk_{self._chunk_index:05d}.csv"
+        self._current_path = self._session_dir / f"{chunk_name}.tmp"
+
+        # Open file and write header
+        self._current_file = open(self._current_path, 'w', encoding='utf-8', newline='')
+        writer = csv.DictWriter(self._current_file, fieldnames=list(SCHEMA.keys()))
+        writer.writeheader()
+
+        self._chunk_start_time = time.time()
+        self._current_chunk_rows = 0
+        self._current_chunk_bytes = len(','.join(SCHEMA.keys())) + 1  # Header size
+
+        logger.debug(f"Opened new chunk: {chunk_name}.tmp")
+
+    def roll_if_needed(self, now: float) -> None:
+        """Check if current chunk should be rolled and finalize if so.
+
+        Roll conditions:
+        - Time: chunk age >= roll_interval_s
+        - Size: chunk size >= target_bytes
+
+        Args:
+            now: Current timestamp (from time.time())
+        """
+        if self._current_file is None or self._chunk_start_time is None:
+            return
+
+        age = now - self._chunk_start_time
+        should_roll = (
+            age >= self._roll_interval or
+            self._current_chunk_bytes >= self._target_bytes
+        )
+
+        if should_roll:
+            self._finalize_chunk()
+
+    def _finalize_chunk(self) -> None:
+        """Finalize current chunk: fsync, rename .tmp → .csv, update manifest."""
+        import hashlib
+        import json
+        import os
+
+        if self._current_file is None or self._current_path is None:
+            return
+
+        # Flush and fsync
+        self._current_file.flush()
+        os.fsync(self._current_file.fileno())
+        self._current_file.close()
+
+        # Rename .tmp → .csv (atomic on POSIX)
+        final_path = self._current_path.with_suffix('.csv')
+        self._current_path.rename(final_path)
+
+        # Compute SHA256
+        sha256 = hashlib.sha256()
+        with open(final_path, 'rb') as f:
+            for block in iter(lambda: f.read(65536), b''):
+                sha256.update(block)
+        file_hash = sha256.hexdigest()
+
+        file_size = final_path.stat().st_size
+
+        # Update manifest
+        with open(self._manifest_path, 'r') as f:
+            manifest = json.load(f)
+
+        chunk_entry = {
+            "index": self._chunk_index,
+            "name": final_path.name,
+            "rows": self._current_chunk_rows,
+            "size_bytes": file_size,
+            "sha256": file_hash
+        }
+        manifest["chunks"].append(chunk_entry)
+        manifest["next_chunk_index"] = self._chunk_index + 1
+        manifest["total_rows"] = self._total_rows
+        manifest["total_bytes"] = manifest.get("total_bytes", 0) + file_size
+
+        # Write manifest atomically
+        manifest_tmp = self._manifest_path.with_suffix('.json.tmp')
+        with open(manifest_tmp, 'w') as f:
+            json.dump(manifest, f, indent=2)
+        os.fsync(f.fileno())
+        manifest_tmp.rename(self._manifest_path)
+
+        logger.info(
+            f"Finalized chunk {self._chunk_index}: {final_path.name} "
+            f"({self._current_chunk_rows} rows, {file_size} bytes, sha256={file_hash[:8]}...)"
+        )
+
+        # Reset state
+        self._chunk_index += 1
+        self._current_file = None
+        self._current_path = None
+        self._chunk_start_time = None
+        self._current_chunk_rows = 0
+        self._current_chunk_bytes = 0
+
+    def flush(self) -> None:
+        """Finalize current chunk (if any) and sync manifest."""
+        with self._lock:
+            if self._current_file is not None:
+                self._finalize_chunk()
+
+    def snapshot_list(self) -> list[dict]:
+        """Get list of finalized chunks with metadata.
+
+        Returns:
+            List of dicts: [{"index": 0, "name": "chunk_00000.csv", "rows": 1500,
+                            "size_bytes": 123456, "sha256": "abc123..."}]
+        """
+        import json
+
+        with self._lock:
+            with open(self._manifest_path, 'r') as f:
+                manifest = json.load(f)
+            return manifest.get("chunks", [])
+
+    def get_stats(self) -> dict:
+        """Get current session statistics.
+
+        Returns:
+            Dict with session_id, total_rows, total_bytes, chunk_count, current_chunk_rows
+        """
+        import json
+
+        with self._lock:
+            with open(self._manifest_path, 'r') as f:
+                manifest = json.load(f)
+
+            return {
+                "session_id": self._session_id,
+                "total_rows": self._total_rows,
+                "total_bytes": manifest.get("total_bytes", 0),
+                "chunk_count": len(manifest.get("chunks", [])),
+                "current_chunk_rows": self._current_chunk_rows,
+                "current_chunk_bytes": self._current_chunk_bytes
+            }
+
+    def open_chunk(self, chunk_name: str) -> Path:
+        """Get path to a finalized chunk file for reading.
+
+        Args:
+            chunk_name: Chunk filename (e.g., "chunk_00000.csv")
+
+        Returns:
+            Path object to chunk file
+
+        Raises:
+            FileNotFoundError: If chunk doesn't exist
+        """
+        chunk_path = self._session_dir / chunk_name
+        if not chunk_path.exists():
+            raise FileNotFoundError(f"Chunk not found: {chunk_name}")
+        return chunk_path
+
+    def close(self) -> None:
+        """Close and finalize the current chunk (if any)."""
+        self.flush()

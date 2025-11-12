@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from data_store import DataRecorder, DataStore
+from data_store.store import ChunkedDataStore
 from q_sensor_lib import SensorController
 from q_sensor_lib.errors import InvalidConfigValue, MenuTimeout, SerialIOError
 from q_sensor_lib.models import ConnectionState
@@ -37,9 +38,10 @@ from q_sensor_lib.models import ConnectionState
 
 # Read configuration from environment variables
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
-API_PORT = int(os.getenv("API_PORT", "8000"))
+API_PORT = int(os.getenv("API_PORT", "9150"))
 DEFAULT_SERIAL_PORT = os.getenv("SERIAL_PORT", "/dev/ttyUSB0")
 DEFAULT_SERIAL_BAUD = int(os.getenv("SERIAL_BAUD", "9600"))
+CHUNK_RECORDING_PATH = os.getenv("CHUNK_RECORDING_PATH", "/data/qsensor_recordings")
 CORS_ORIGINS = os.getenv(
     "CORS_ORIGINS",
     "http://localhost:3000,http://127.0.0.1:3000,http://blueos.local,http://blueos.local:80,http://blueos.local:3000,http://blueos.local:9150"
@@ -60,6 +62,8 @@ logger = logging.getLogger(__name__)
 _controller: Optional[SensorController] = None
 _store: Optional[DataStore] = None
 _recorder: Optional[DataRecorder] = None
+_chunked_store: Optional[ChunkedDataStore] = None  # For live mirroring
+_chunked_recorder: Optional[DataRecorder] = None  # For chunked recording
 _lock = RLock()  # Protects state-changing operations
 
 # =============================================================================
@@ -128,6 +132,67 @@ class StatsResponse(BaseModel):
     end_time: Optional[str]
     duration_s: Optional[float]
     est_sample_rate_hz: Optional[float]
+
+
+# =============================================================================
+# Chunked Recording Models (for live mirroring)
+# =============================================================================
+
+class RecordStartRequest(BaseModel):
+    """Request for POST /record/start."""
+    rate_hz: int = 500
+    schema_version: int = 1
+    mission: str = "Cockpit"
+    roll_interval_s: float = 60.0
+
+
+class RecordStartResponse(BaseModel):
+    """Response for POST /record/start."""
+    session_id: str
+    started_at: str
+    rate_hz: int
+    schema_version: int
+
+
+class RecordStopRequest(BaseModel):
+    """Request for POST /record/stop."""
+    session_id: str
+
+
+class RecordStopResponse(BaseModel):
+    """Response for POST /record/stop."""
+    session_id: str
+    stopped_at: str
+    chunks: int
+    rows: int
+
+
+class RecordStatusResponse(BaseModel):
+    """Response for GET /record/status."""
+    session_id: str
+    state: str  # "recording", "stopped"
+    rows: int
+    bytes: int
+    last_chunk_index: int
+    backlog: int  # chunks waiting to be downloaded
+
+
+class ChunkMetadata(BaseModel):
+    """Metadata for a single chunk."""
+    index: int
+    name: str
+    size_bytes: int
+    sha256: str
+    rows: int
+
+
+class HealthResponse(BaseModel):
+    """Response for GET /instrument/health."""
+    connected: bool
+    port: Optional[str]
+    model: Optional[str]
+    firmware: Optional[str]
+    disk_free_bytes: Optional[int]
 
 
 # =============================================================================
@@ -800,6 +865,275 @@ async def websocket_stream(websocket: WebSocket):
 async def websocket_stream_alias(websocket: WebSocket):
     """Alias for /stream with /sensor prefix."""
     await websocket_stream(websocket)
+
+
+# =============================================================================
+# Chunked Recording Endpoints (for live mirroring)
+# =============================================================================
+
+@app.post("/record/start", response_model=RecordStartResponse)
+async def start_chunked_recording(req: RecordStartRequest):
+    """Start a new chunked recording session for live mirroring.
+
+    Creates a session directory, initializes ChunkedDataStore, starts acquisition
+    and recording. Chunks are written atomically (.tmp → .csv) and tracked in manifest.json.
+
+    Args:
+        req: RecordStartRequest with rate_hz, schema_version, mission, roll_interval_s
+
+    Returns:
+        RecordStartResponse with session_id, started_at, rate_hz, schema_version
+
+    Raises:
+        424: If sensor not connected
+        409: If recording already active
+        507: If insufficient disk space
+    """
+    import uuid
+    import shutil
+    from datetime import datetime, timezone
+
+    global _controller, _chunked_store, _chunked_recorder, _lock
+
+    # Check sensor connected
+    if not _controller or not _controller.is_connected():
+        raise HTTPException(status_code=424, detail="Sensor not connected. Call /connect first.")
+
+    # Check disk space (require at least 100MB free)
+    try:
+        disk_usage = shutil.disk_usage(CHUNK_RECORDING_PATH)
+        if disk_usage.free < 100 * 1024 * 1024:
+            raise HTTPException(status_code=507, detail="Insufficient disk space (< 100MB free)")
+    except Exception as e:
+        logger.warning(f"Could not check disk space: {e}")
+
+    with _lock:
+        # Check if already recording
+        if _chunked_recorder and _chunked_recorder.is_running():
+            raise HTTPException(status_code=409, detail="Recording already active")
+
+        # Generate session ID
+        session_id = str(uuid.uuid4())
+        started_at = datetime.now(timezone.utc).isoformat()
+
+        logger.info(f"Starting chunked recording session: {session_id}")
+
+        # Initialize ChunkedDataStore
+        _chunked_store = ChunkedDataStore(
+            session_id=session_id,
+            base_path=Path(CHUNK_RECORDING_PATH),
+            roll_interval_s=req.roll_interval_s,
+            target_chunk_mb=2.0
+        )
+
+        # Start acquisition if not already running
+        if _controller.state not in (ConnectionState.ACQ_FREERUN, ConnectionState.ACQ_POLLED):
+            logger.info("Starting acquisition (auto-triggered by /record/start)")
+            _controller.start_acquisition(poll_hz=req.rate_hz / 500.0)  # Approx poll rate
+
+        # Start recorder with chunked store
+        _chunked_recorder = DataRecorder(_controller, _chunked_store, poll_interval_s=0.2)
+        _chunked_recorder.start()
+
+        logger.info(f"Chunked recording started: session={session_id}, rate={req.rate_hz}Hz")
+
+        return RecordStartResponse(
+            session_id=session_id,
+            started_at=started_at,
+            rate_hz=req.rate_hz,
+            schema_version=req.schema_version
+        )
+
+
+@app.post("/record/stop", response_model=RecordStopResponse)
+async def stop_chunked_recording(req: RecordStopRequest):
+    """Stop chunked recording session and finalize all chunks.
+
+    Args:
+        req: RecordStopRequest with session_id
+
+    Returns:
+        RecordStopResponse with session_id, stopped_at, chunks, rows
+
+    Raises:
+        400: If no active recording
+    """
+    from datetime import datetime, timezone
+
+    global _chunked_recorder, _chunked_store, _lock
+
+    with _lock:
+        if not _chunked_recorder or not _chunked_recorder.is_running():
+            raise HTTPException(status_code=400, detail="No active recording session")
+
+        if not _chunked_store:
+            raise HTTPException(status_code=500, detail="Chunked store not initialized")
+
+        logger.info(f"Stopping chunked recording: {req.session_id}")
+
+        # Stop recorder and flush
+        _chunked_recorder.stop()
+        _chunked_store.flush()
+
+        # Get final stats
+        stats = _chunked_store.get_stats()
+        chunks = _chunked_store.snapshot_list()
+
+        stopped_at = datetime.now(timezone.utc).isoformat()
+
+        logger.info(
+            f"Chunked recording stopped: session={req.session_id}, "
+            f"chunks={len(chunks)}, rows={stats['total_rows']}"
+        )
+
+        return RecordStopResponse(
+            session_id=req.session_id,
+            stopped_at=stopped_at,
+            chunks=len(chunks),
+            rows=stats['total_rows']
+        )
+
+
+@app.get("/record/status", response_model=RecordStatusResponse)
+async def get_recording_status(session_id: str = Query(...)):
+    """Get current recording session status.
+
+    Args:
+        session_id: Session UUID
+
+    Returns:
+        RecordStatusResponse with state, rows, bytes, last_chunk_index, backlog
+
+    Raises:
+        404: If session not found
+    """
+    global _chunked_store, _chunked_recorder
+
+    if not _chunked_store:
+        raise HTTPException(status_code=404, detail="No active recording session")
+
+    stats = _chunked_store.get_stats()
+    chunks = _chunked_store.snapshot_list()
+
+    state = "recording" if _chunked_recorder and _chunked_recorder.is_running() else "stopped"
+    last_chunk_index = len(chunks) - 1 if chunks else -1
+
+    return RecordStatusResponse(
+        session_id=session_id,
+        state=state,
+        rows=stats['total_rows'],
+        bytes=stats['total_bytes'],
+        last_chunk_index=last_chunk_index,
+        backlog=len(chunks)  # Simplified: assume all chunks are "backlog"
+    )
+
+
+@app.get("/record/snapshots", response_model=list[ChunkMetadata])
+async def get_chunk_snapshots(session_id: str = Query(...)):
+    """Get list of finalized chunks with metadata (size, SHA256).
+
+    Args:
+        session_id: Session UUID
+
+    Returns:
+        List of ChunkMetadata with index, name, size_bytes, sha256, rows
+
+    Raises:
+        404: If session not found
+    """
+    global _chunked_store
+
+    if not _chunked_store:
+        raise HTTPException(status_code=404, detail="No active recording session")
+
+    chunks = _chunked_store.snapshot_list()
+    return [ChunkMetadata(**chunk) for chunk in chunks]
+
+
+@app.get("/files/{session_id}/{filename}")
+async def download_chunk_file(session_id: str, filename: str):
+    """Download a finalized chunk file.
+
+    Args:
+        session_id: Session UUID
+        filename: Chunk filename (e.g., "chunk_00000.csv")
+
+    Returns:
+        FileResponse with CSV chunk
+
+    Raises:
+        404: If session or file not found
+    """
+    global _chunked_store
+
+    if not _chunked_store:
+        # Allow download even if no active session (for recovery)
+        session_dir = Path(CHUNK_RECORDING_PATH) / session_id
+        if not session_dir.exists():
+            raise HTTPException(status_code=404, detail="Session not found")
+        chunk_path = session_dir / filename
+    else:
+        try:
+            chunk_path = _chunked_store.open_chunk(filename)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Chunk not found: {filename}")
+
+    if not chunk_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+
+    return FileResponse(
+        path=str(chunk_path),
+        media_type="text/csv",
+        filename=filename
+    )
+
+
+@app.get("/instrument/health", response_model=HealthResponse)
+async def get_instrument_health():
+    """Get instrument connection health and disk space.
+
+    Returns:
+        HealthResponse with connected, port, model, firmware, disk_free_bytes
+    """
+    import shutil
+
+    global _controller
+
+    connected = _controller is not None and _controller.is_connected()
+    port = None
+    model = None
+    firmware = None
+    disk_free_bytes = None
+
+    if _controller and connected:
+        port = DEFAULT_SERIAL_PORT  # Simplified: use default
+        model = _controller.sensor_id
+        firmware = "unknown"  # Not available in current API
+
+    # Check disk space
+    try:
+        disk_usage = shutil.disk_usage(CHUNK_RECORDING_PATH)
+        disk_free_bytes = disk_usage.free
+    except Exception as e:
+        logger.warning(f"Could not check disk space: {e}")
+
+    return HealthResponse(
+        connected=connected,
+        port=port,
+        model=model,
+        firmware=firmware,
+        disk_free_bytes=disk_free_bytes
+    )
+
+
+@app.get("/events")
+async def events_stream(session_id: str = Query(...)):
+    """Server-Sent Events stream for recording progress (SSE).
+
+    NOT IMPLEMENTED in MVP. Returns 501 Not Implemented.
+    Future: Stream state, bytes, last_chunk, errors in real-time.
+    """
+    raise HTTPException(status_code=501, detail="SSE stream not implemented in MVP")
 
 
 # =============================================================================
