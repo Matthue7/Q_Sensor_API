@@ -568,8 +568,8 @@ class ChunkedDataStore:
         import csv
         import time
 
-        # Generate chunk filename
-        chunk_name = f"chunk_{self._chunk_index:05d}.csv"
+        # Generate chunk filename (base name without extension)
+        chunk_name = f"chunk_{self._chunk_index:05d}"
         self._current_path = self._session_dir / f"{chunk_name}.tmp"
 
         # Open file and write header
@@ -614,14 +614,29 @@ class ChunkedDataStore:
         if self._current_file is None or self._current_path is None:
             return
 
-        # Flush and fsync
-        self._current_file.flush()
-        os.fsync(self._current_file.fileno())
-        self._current_file.close()
+        # Save references before clearing state
+        file_handle = self._current_file
+        tmp_path = self._current_path
+        chunk_rows = self._current_chunk_rows
+        chunk_index = self._chunk_index
+
+        # CRITICAL: Clear file handle FIRST to prevent race condition
+        # If another thread calls _append_row() during finalization, it will
+        # see _current_file is None and open a new chunk instead of writing to closed file
+        self._current_file = None
+        self._current_path = None
+        self._chunk_start_time = None
+        self._current_chunk_rows = 0
+        self._current_chunk_bytes = 0
+
+        # Now safe to flush and close (no other thread can reference this handle)
+        file_handle.flush()
+        os.fsync(file_handle.fileno())
+        file_handle.close()
 
         # Rename .tmp → .csv (atomic on POSIX)
-        final_path = self._current_path.with_suffix('.csv')
-        self._current_path.rename(final_path)
+        final_path = tmp_path.with_suffix('.csv')
+        tmp_path.rename(final_path)
 
         # Compute SHA256
         sha256 = hashlib.sha256()
@@ -637,14 +652,14 @@ class ChunkedDataStore:
             manifest = json.load(f)
 
         chunk_entry = {
-            "index": self._chunk_index,
+            "index": chunk_index,
             "name": final_path.name,
-            "rows": self._current_chunk_rows,
+            "rows": chunk_rows,
             "size_bytes": file_size,
             "sha256": file_hash
         }
         manifest["chunks"].append(chunk_entry)
-        manifest["next_chunk_index"] = self._chunk_index + 1
+        manifest["next_chunk_index"] = chunk_index + 1
         manifest["total_rows"] = self._total_rows
         manifest["total_bytes"] = manifest.get("total_bytes", 0) + file_size
 
@@ -652,21 +667,17 @@ class ChunkedDataStore:
         manifest_tmp = self._manifest_path.with_suffix('.json.tmp')
         with open(manifest_tmp, 'w') as f:
             json.dump(manifest, f, indent=2)
-        os.fsync(f.fileno())
+            f.flush()
+            os.fsync(f.fileno())
         manifest_tmp.rename(self._manifest_path)
 
         logger.info(
-            f"Finalized chunk {self._chunk_index}: {final_path.name} "
-            f"({self._current_chunk_rows} rows, {file_size} bytes, sha256={file_hash[:8]}...)"
+            f"Finalized chunk {chunk_index}: {final_path.name} "
+            f"({chunk_rows} rows, {file_size} bytes, sha256={file_hash[:8]}...)"
         )
 
-        # Reset state
+        # Increment chunk index for next chunk
         self._chunk_index += 1
-        self._current_file = None
-        self._current_path = None
-        self._chunk_start_time = None
-        self._current_chunk_rows = 0
-        self._current_chunk_bytes = 0
 
     def flush(self) -> None:
         """Finalize current chunk (if any) and sync manifest."""

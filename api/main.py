@@ -15,12 +15,13 @@ Error mapping:
 import asyncio
 import logging
 import os
+import subprocess
 import threading
 from pathlib import Path
 from threading import RLock
 from typing import Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -46,6 +47,13 @@ CORS_ORIGINS = os.getenv(
     "CORS_ORIGINS",
     "http://localhost:3000,http://127.0.0.1:3000,http://blueos.local,http://blueos.local:80,http://blueos.local:3000,http://blueos.local:9150"
 ).split(",")
+
+# Version tracking
+API_VERSION = "0.2.0"
+try:
+    GIT_COMMIT = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=Path(__file__).parent.parent, stderr=subprocess.DEVNULL).decode().strip()
+except Exception:
+    GIT_COMMIT = "unknown"
 
 # Configure logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -84,6 +92,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 404 logging middleware for debugging
+@app.middleware("http")
+async def log_404_requests(request: Request, call_next):
+    """Log all 404 responses to help debug missing routes."""
+    response = await call_next(request)
+    if response.status_code == 404:
+        logger.warning(f"404 NOT FOUND: {request.method} {request.url.path} query={dict(request.query_params)}")
+    return response
 
 # Mount static files for webapp assets (CSS, JS, etc.)
 static_dir = Path(__file__).parent / "static"
@@ -429,15 +446,19 @@ async def start_acquisition(
     """
     global _controller, _store, _recorder, _lock
 
+    logger.info(f"[SENSOR/START] Request: poll_hz={poll_hz}, auto_record={auto_record}")
+
     if not _controller:
+        logger.error("[SENSOR/START] FAILED: Not connected")
         raise HTTPException(status_code=503, detail="Not connected")
 
     with _lock:
         if _controller.state in (ConnectionState.ACQ_FREERUN, ConnectionState.ACQ_POLLED):
+            logger.error(f"[SENSOR/START] FAILED: Acquisition already running in {_controller.state.value}")
             raise HTTPException(status_code=400, detail="Acquisition already running")
 
         config = _controller.get_config()
-        logger.info(f"Starting acquisition in {config.mode} mode...")
+        logger.info(f"[SENSOR/START] Starting acquisition: mode={config.mode}, poll_hz={poll_hz}")
 
         _controller.start_acquisition(poll_hz=poll_hz)
 
@@ -445,14 +466,16 @@ async def start_acquisition(
         recording = False
         if auto_record:
             if not _store:
+                logger.info("[SENSOR/START] Creating DataStore: max_rows=100000")
                 _store = DataStore(max_rows=100000, auto_flush_interval_s=None)
 
             if _recorder is None or not _recorder.is_running():
-                logger.info("Auto-starting DataRecorder with poll_interval=0.2s")
+                logger.info("[SENSOR/START] Auto-starting DataRecorder: poll_interval=0.2s")
                 _recorder = DataRecorder(_controller, _store, poll_interval_s=0.2)
                 _recorder.start()
                 recording = True
 
+        logger.info(f"[SENSOR/START] SUCCESS: mode={config.mode}, recording={recording}")
         return {"status": "started", "mode": config.mode, "recording": recording}
 
 
@@ -895,30 +918,38 @@ async def start_chunked_recording(req: RecordStartRequest):
 
     global _controller, _chunked_store, _chunked_recorder, _lock
 
+    logger.info(f"[RECORD/START] Request received: mission={req.mission}, rate_hz={req.rate_hz}, "
+                f"schema_version={req.schema_version}, roll_interval_s={req.roll_interval_s}")
+
     # Check sensor connected
     if not _controller or not _controller.is_connected():
+        logger.error("[RECORD/START] FAILED: Sensor not connected")
         raise HTTPException(status_code=424, detail="Sensor not connected. Call /connect first.")
 
     # Check disk space (require at least 100MB free)
     try:
         disk_usage = shutil.disk_usage(CHUNK_RECORDING_PATH)
+        logger.info(f"[RECORD/START] Disk check: free={disk_usage.free / (1024**3):.2f}GB, path={CHUNK_RECORDING_PATH}")
         if disk_usage.free < 100 * 1024 * 1024:
+            logger.error(f"[RECORD/START] FAILED: Insufficient disk space ({disk_usage.free / (1024**2):.1f}MB)")
             raise HTTPException(status_code=507, detail="Insufficient disk space (< 100MB free)")
     except Exception as e:
-        logger.warning(f"Could not check disk space: {e}")
+        logger.warning(f"[RECORD/START] Could not check disk space: {e}")
 
     with _lock:
         # Check if already recording
         if _chunked_recorder and _chunked_recorder.is_running():
+            logger.error("[RECORD/START] FAILED: Recording already active")
             raise HTTPException(status_code=409, detail="Recording already active")
 
         # Generate session ID
         session_id = str(uuid.uuid4())
         started_at = datetime.now(timezone.utc).isoformat()
 
-        logger.info(f"Starting chunked recording session: {session_id}")
+        logger.info(f"[RECORD/START] Initializing session: {session_id}")
 
         # Initialize ChunkedDataStore
+        logger.info(f"[RECORD/START] Creating ChunkedDataStore: path={CHUNK_RECORDING_PATH}, roll_interval_s={req.roll_interval_s}")
         _chunked_store = ChunkedDataStore(
             session_id=session_id,
             base_path=Path(CHUNK_RECORDING_PATH),
@@ -928,14 +959,18 @@ async def start_chunked_recording(req: RecordStartRequest):
 
         # Start acquisition if not already running
         if _controller.state not in (ConnectionState.ACQ_FREERUN, ConnectionState.ACQ_POLLED):
-            logger.info("Starting acquisition (auto-triggered by /record/start)")
+            logger.info(f"[RECORD/START] Auto-starting acquisition: mode={_controller.state.value}")
             _controller.start_acquisition(poll_hz=req.rate_hz / 500.0)  # Approx poll rate
+        else:
+            logger.info(f"[RECORD/START] Acquisition already running: mode={_controller.state.value}")
 
         # Start recorder with chunked store
+        logger.info(f"[RECORD/START] Starting DataRecorder: poll_interval=0.2s")
         _chunked_recorder = DataRecorder(_controller, _chunked_store, poll_interval_s=0.2)
         _chunked_recorder.start()
 
-        logger.info(f"Chunked recording started: session={session_id}, rate={req.rate_hz}Hz")
+        logger.info(f"[RECORD/START] SUCCESS: session={session_id}, rate={req.rate_hz}Hz, "
+                    f"mission={req.mission}, recording_path={CHUNK_RECORDING_PATH}/{session_id}")
 
         return RecordStartResponse(
             session_id=session_id,
@@ -962,17 +997,22 @@ async def stop_chunked_recording(req: RecordStopRequest):
 
     global _chunked_recorder, _chunked_store, _lock
 
+    logger.info(f"[RECORD/STOP] Request received: session_id={req.session_id}")
+
     with _lock:
         if not _chunked_recorder or not _chunked_recorder.is_running():
+            logger.error("[RECORD/STOP] FAILED: No active recording session")
             raise HTTPException(status_code=400, detail="No active recording session")
 
         if not _chunked_store:
+            logger.error("[RECORD/STOP] FAILED: Chunked store not initialized")
             raise HTTPException(status_code=500, detail="Chunked store not initialized")
 
-        logger.info(f"Stopping chunked recording: {req.session_id}")
+        logger.info(f"[RECORD/STOP] Stopping recorder...")
 
         # Stop recorder and flush
         _chunked_recorder.stop()
+        logger.info(f"[RECORD/STOP] Flushing remaining data...")
         _chunked_store.flush()
 
         # Get final stats
@@ -982,8 +1022,8 @@ async def stop_chunked_recording(req: RecordStopRequest):
         stopped_at = datetime.now(timezone.utc).isoformat()
 
         logger.info(
-            f"Chunked recording stopped: session={req.session_id}, "
-            f"chunks={len(chunks)}, rows={stats['total_rows']}"
+            f"[RECORD/STOP] SUCCESS: session={req.session_id}, "
+            f"chunks={len(chunks)}, rows={stats['total_rows']}, bytes={stats['total_bytes']}"
         )
 
         return RecordStopResponse(
@@ -1009,7 +1049,10 @@ async def get_recording_status(session_id: str = Query(...)):
     """
     global _chunked_store, _chunked_recorder
 
+    logger.debug(f"[RECORD/STATUS] Request: session_id={session_id}")
+
     if not _chunked_store:
+        logger.error(f"[RECORD/STATUS] FAILED: No active recording session")
         raise HTTPException(status_code=404, detail="No active recording session")
 
     stats = _chunked_store.get_stats()
@@ -1017,6 +1060,9 @@ async def get_recording_status(session_id: str = Query(...)):
 
     state = "recording" if _chunked_recorder and _chunked_recorder.is_running() else "stopped"
     last_chunk_index = len(chunks) - 1 if chunks else -1
+
+    logger.debug(f"[RECORD/STATUS] session={session_id}, state={state}, rows={stats['total_rows']}, "
+                 f"bytes={stats['total_bytes']}, chunks={len(chunks)}")
 
     return RecordStatusResponse(
         session_id=session_id,
@@ -1043,10 +1089,14 @@ async def get_chunk_snapshots(session_id: str = Query(...)):
     """
     global _chunked_store
 
+    logger.debug(f"[RECORD/SNAPSHOTS] Request: session_id={session_id}")
+
     if not _chunked_store:
+        logger.error(f"[RECORD/SNAPSHOTS] FAILED: No active recording session")
         raise HTTPException(status_code=404, detail="No active recording session")
 
     chunks = _chunked_store.snapshot_list()
+    logger.debug(f"[RECORD/SNAPSHOTS] Returning {len(chunks)} chunks")
     return [ChunkMetadata(**chunk) for chunk in chunks]
 
 
@@ -1164,6 +1214,16 @@ async def health():
     }
 
 
+@app.get("/version")
+async def version():
+    """Version tracking endpoint for debugging and compatibility checks."""
+    return {
+        "api": API_VERSION,
+        "git": GIT_COMMIT,
+        "status": "online"
+    }
+
+
 @app.get("/register_service")
 async def register_service():
     """BlueOS service discovery endpoint."""
@@ -1184,15 +1244,28 @@ async def register_service():
 
 @app.on_event("startup")
 async def startup_event():
-    """Log startup and configuration."""
+    """Log startup and configuration, including route table dump."""
     logger.info("=" * 60)
     logger.info("Q-Sensor API started")
+    logger.info(f"Version: {API_VERSION}")
+    logger.info(f"Git Commit: {GIT_COMMIT}")
     logger.info(f"Host: {API_HOST}")
     logger.info(f"Port: {API_PORT}")
     logger.info(f"Default Serial Port: {DEFAULT_SERIAL_PORT}")
     logger.info(f"Default Serial Baud: {DEFAULT_SERIAL_BAUD}")
+    logger.info(f"Chunk Recording Path: {CHUNK_RECORDING_PATH}")
     logger.info(f"CORS Origins: {CORS_ORIGINS}")
     logger.info(f"Log Level: {LOG_LEVEL}")
+    logger.info("=" * 60)
+
+    # Dump all registered routes for debugging
+    logger.info("=== REGISTERED ROUTES ===")
+    for route in app.routes:
+        if hasattr(route, 'methods') and hasattr(route, 'path'):
+            methods = ','.join(sorted(route.methods))
+            logger.info(f"{methods:10} {route.path}")
+        elif hasattr(route, 'path'):
+            logger.info(f"{'WS':10} {route.path}")
     logger.info("=" * 60)
 
 
