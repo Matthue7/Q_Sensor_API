@@ -426,7 +426,7 @@ async def set_config(config: Optional[ConfigRequest] = None):
 @app.post("/start")
 async def start_acquisition(
     poll_hz: float = Query(1.0, description="Poll rate for polled mode (Hz)"),
-    auto_record: bool = Query(True, description="Automatically start DataRecorder")
+    auto_record: bool = Query(False, description="Automatically start DataRecorder")
 ):
     """Start data acquisition.
 
@@ -1222,6 +1222,13 @@ async def version():
         "git": GIT_COMMIT,
         "status": "online"
     }
+
+
+@app.get("/docs.json")
+async def docs_json_redirect():
+    """Redirect legacy /docs.json to /openapi.json for BlueOS compatibility."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/openapi.json")
 
 
 @app.get("/register_service")

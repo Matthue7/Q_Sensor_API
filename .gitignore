@@ -32,3 +32,6 @@ CONFIG_MENU
 ERROR
 PAUSED
 sensor_api/
+./tar.gz
+/tar.gz
+*.gz
