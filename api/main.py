@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from data_store import DataRecorder, DataStore
+from data_store.session_manager import SessionManager
 from data_store.store import ChunkedDataStore
 from q_sensor_lib import SensorController
 from q_sensor_lib.errors import InvalidConfigValue, MenuTimeout, SerialIOError
@@ -70,8 +71,9 @@ logger = logging.getLogger(__name__)
 _controller: Optional[SensorController] = None
 _store: Optional[DataStore] = None
 _recorder: Optional[DataRecorder] = None
-_chunked_store: Optional[ChunkedDataStore] = None  # For live mirroring
-_chunked_recorder: Optional[DataRecorder] = None  # For chunked recording
+_chunked_store: Optional[ChunkedDataStore] = None  # DEPRECATED: kept for compatibility
+_chunked_recorder: Optional[DataRecorder] = None  # DEPRECATED: kept for compatibility
+_session_manager: Optional[SessionManager] = None  # NEW: manages recording sessions
 _lock = RLock()  # Protects state-changing operations
 
 # =============================================================================
@@ -349,7 +351,7 @@ async def connect(
         503: If port cannot be opened (SerialIOError)
         504: If menu does not appear (MenuTimeout)
     """
-    global _controller, _store, _lock
+    global _controller, _store, _session_manager, _lock
 
     with _lock:
         if _controller is not None:
@@ -363,6 +365,12 @@ async def connect(
         _store = DataStore(max_rows=100000)  # 100k rows default
 
         _controller.connect(port=port, baud=baud)
+
+        # Initialize SessionManager with connected controller
+        _session_manager = SessionManager(
+            controller=_controller,
+            base_path=Path(CHUNK_RECORDING_PATH)
+        )
 
         logger.info(f"Connected to sensor: {_controller.sensor_id}")
         return ConnectResponse(
@@ -610,10 +618,16 @@ async def disconnect():
     Returns:
         {"status": "disconnected"}
     """
-    global _controller, _store, _recorder, _lock
+    global _controller, _store, _recorder, _session_manager, _lock
 
     with _lock:
-        # Stop recorder if running
+        # Stop all active recording sessions
+        if _session_manager:
+            logger.info("Shutting down all recording sessions before disconnect...")
+            _session_manager.shutdown_all()
+            _session_manager = None
+
+        # Stop recorder if running (old system)
         if _recorder and _recorder.is_running():
             logger.info("Stopping recorder before disconnect...")
             _recorder.stop()
@@ -912,11 +926,9 @@ async def start_chunked_recording(req: RecordStartRequest):
         409: If recording already active
         507: If insufficient disk space
     """
-    import uuid
     import shutil
-    from datetime import datetime, timezone
 
-    global _controller, _chunked_store, _chunked_recorder, _lock
+    global _controller, _session_manager, _lock
 
     logger.info(f"[RECORD/START] Request received: mission={req.mission}, rate_hz={req.rate_hz}, "
                 f"schema_version={req.schema_version}, roll_interval_s={req.roll_interval_s}")
@@ -925,6 +937,11 @@ async def start_chunked_recording(req: RecordStartRequest):
     if not _controller or not _controller.is_connected():
         logger.error("[RECORD/START] FAILED: Sensor not connected")
         raise HTTPException(status_code=424, detail="Sensor not connected. Call /connect first.")
+
+    # Check session manager initialized
+    if not _session_manager:
+        logger.error("[RECORD/START] FAILED: SessionManager not initialized")
+        raise HTTPException(status_code=500, detail="SessionManager not initialized. Call /connect first.")
 
     # Check disk space (require at least 100MB free)
     try:
@@ -937,26 +954,6 @@ async def start_chunked_recording(req: RecordStartRequest):
         logger.warning(f"[RECORD/START] Could not check disk space: {e}")
 
     with _lock:
-        # Check if already recording
-        if _chunked_recorder and _chunked_recorder.is_running():
-            logger.error("[RECORD/START] FAILED: Recording already active")
-            raise HTTPException(status_code=409, detail="Recording already active")
-
-        # Generate session ID
-        session_id = str(uuid.uuid4())
-        started_at = datetime.now(timezone.utc).isoformat()
-
-        logger.info(f"[RECORD/START] Initializing session: {session_id}")
-
-        # Initialize ChunkedDataStore
-        logger.info(f"[RECORD/START] Creating ChunkedDataStore: path={CHUNK_RECORDING_PATH}, roll_interval_s={req.roll_interval_s}")
-        _chunked_store = ChunkedDataStore(
-            session_id=session_id,
-            base_path=Path(CHUNK_RECORDING_PATH),
-            roll_interval_s=req.roll_interval_s,
-            target_chunk_mb=2.0
-        )
-
         # Start acquisition if not already running
         if _controller.state not in (ConnectionState.ACQ_FREERUN, ConnectionState.ACQ_POLLED):
             logger.info(f"[RECORD/START] Auto-starting acquisition: mode={_controller.state.value}")
@@ -964,20 +961,33 @@ async def start_chunked_recording(req: RecordStartRequest):
         else:
             logger.info(f"[RECORD/START] Acquisition already running: mode={_controller.state.value}")
 
-        # Start recorder with chunked store
-        logger.info(f"[RECORD/START] Starting DataRecorder: poll_interval=0.2s")
-        _chunked_recorder = DataRecorder(_controller, _chunked_store, poll_interval_s=0.2)
-        _chunked_recorder.start()
+        try:
+            # Create and start recording session via SessionManager
+            session = _session_manager.create_session(
+                mission=req.mission,
+                rate_hz=req.rate_hz,
+                schema_version=req.schema_version,
+                roll_interval_s=req.roll_interval_s,
+                target_chunk_mb=2.0
+            )
 
-        logger.info(f"[RECORD/START] SUCCESS: session={session_id}, rate={req.rate_hz}Hz, "
-                    f"mission={req.mission}, recording_path={CHUNK_RECORDING_PATH}/{session_id}")
+            logger.info(f"[RECORD/START] SUCCESS: session={session.session_id}, rate={req.rate_hz}Hz, "
+                        f"mission={req.mission}, recording_path={CHUNK_RECORDING_PATH}/{session.session_id}")
 
-        return RecordStartResponse(
-            session_id=session_id,
-            started_at=started_at,
-            rate_hz=req.rate_hz,
-            schema_version=req.schema_version
-        )
+            return RecordStartResponse(
+                session_id=session.session_id,
+                started_at=session.started_at.isoformat(),
+                rate_hz=session.rate_hz,
+                schema_version=session.schema_version
+            )
+
+        except RuntimeError as e:
+            # Session already active
+            logger.error(f"[RECORD/START] FAILED: {e}")
+            raise HTTPException(status_code=409, detail=str(e))
+        except Exception as e:
+            logger.error(f"[RECORD/START] FAILED: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to start recording: {e}")
 
 
 @app.post("/record/stop", response_model=RecordStopResponse)
@@ -991,47 +1001,54 @@ async def stop_chunked_recording(req: RecordStopRequest):
         RecordStopResponse with session_id, stopped_at, chunks, rows
 
     Raises:
-        400: If no active recording
+        404: If session not found
+        400: If session is not in RECORDING state
     """
-    from datetime import datetime, timezone
-
-    global _chunked_recorder, _chunked_store, _lock
+    global _session_manager, _lock
 
     logger.info(f"[RECORD/STOP] Request received: session_id={req.session_id}")
 
+    # Check session manager initialized
+    if not _session_manager:
+        logger.error("[RECORD/STOP] FAILED: SessionManager not initialized")
+        raise HTTPException(status_code=500, detail="SessionManager not initialized")
+
     with _lock:
-        if not _chunked_recorder or not _chunked_recorder.is_running():
-            logger.error("[RECORD/STOP] FAILED: No active recording session")
-            raise HTTPException(status_code=400, detail="No active recording session")
+        # Get session and validate it exists
+        session = _session_manager.get_session(req.session_id)
+        if not session:
+            logger.error(f"[RECORD/STOP] FAILED: Session not found: {req.session_id}")
+            raise HTTPException(status_code=404, detail=f"Session not found: {req.session_id}")
 
-        if not _chunked_store:
-            logger.error("[RECORD/STOP] FAILED: Chunked store not initialized")
-            raise HTTPException(status_code=500, detail="Chunked store not initialized")
+        # Validate session is recording
+        if not session.is_recording:
+            logger.error(f"[RECORD/STOP] FAILED: Session not recording (state={session.state.value})")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Session is not recording (state={session.state.value})"
+            )
 
-        logger.info(f"[RECORD/STOP] Stopping recorder...")
+        try:
+            logger.info(f"[RECORD/STOP] Stopping session {req.session_id}...")
 
-        # Stop recorder and flush
-        _chunked_recorder.stop()
-        logger.info(f"[RECORD/STOP] Flushing remaining data...")
-        _chunked_store.flush()
+            # Stop session via SessionManager
+            stats = _session_manager.stop_session(req.session_id)
 
-        # Get final stats
-        stats = _chunked_store.get_stats()
-        chunks = _chunked_store.snapshot_list()
+            logger.info(
+                f"[RECORD/STOP] SUCCESS: session={req.session_id}, "
+                f"chunks={stats.chunk_count}, rows={stats.total_rows}, bytes={stats.total_bytes}"
+            )
 
-        stopped_at = datetime.now(timezone.utc).isoformat()
+            return RecordStopResponse(
+                session_id=req.session_id,
+                stopped_at=stats.stopped_at.isoformat(),
+                chunks=stats.chunk_count,
+                rows=stats.total_rows
+            )
 
-        logger.info(
-            f"[RECORD/STOP] SUCCESS: session={req.session_id}, "
-            f"chunks={len(chunks)}, rows={stats['total_rows']}, bytes={stats['total_bytes']}"
-        )
-
-        return RecordStopResponse(
-            session_id=req.session_id,
-            stopped_at=stopped_at,
-            chunks=len(chunks),
-            rows=stats['total_rows']
-        )
+        except Exception as e:
+            logger.error(f"[RECORD/STOP] FAILED: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to stop recording: {e}")
 
 
 @app.get("/record/status", response_model=RecordStatusResponse)
@@ -1047,30 +1064,37 @@ async def get_recording_status(session_id: str = Query(...)):
     Raises:
         404: If session not found
     """
-    global _chunked_store, _chunked_recorder
+    global _session_manager
 
     logger.debug(f"[RECORD/STATUS] Request: session_id={session_id}")
 
-    if not _chunked_store:
-        logger.error(f"[RECORD/STATUS] FAILED: No active recording session")
-        raise HTTPException(status_code=404, detail="No active recording session")
+    # Check session manager initialized
+    if not _session_manager:
+        logger.error("[RECORD/STATUS] FAILED: SessionManager not initialized")
+        raise HTTPException(status_code=500, detail="SessionManager not initialized")
 
-    stats = _chunked_store.get_stats()
-    chunks = _chunked_store.snapshot_list()
+    # Get session and validate it exists
+    session = _session_manager.get_session(session_id)
+    if not session:
+        logger.error(f"[RECORD/STATUS] FAILED: Session not found: {session_id}")
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
-    state = "recording" if _chunked_recorder and _chunked_recorder.is_running() else "stopped"
-    last_chunk_index = len(chunks) - 1 if chunks else -1
+    # Get session status
+    status = session.get_status()
 
-    logger.debug(f"[RECORD/STATUS] session={session_id}, state={state}, rows={stats['total_rows']}, "
-                 f"bytes={stats['total_bytes']}, chunks={len(chunks)}")
+    # Map SessionState enum to string for API response
+    state_str = "recording" if status.state.value == "recording" else "stopped"
+
+    logger.debug(f"[RECORD/STATUS] session={session_id}, state={state_str}, rows={status.rows}, "
+                 f"bytes={status.bytes}, chunks={status.backlog}")
 
     return RecordStatusResponse(
         session_id=session_id,
-        state=state,
-        rows=stats['total_rows'],
-        bytes=stats['total_bytes'],
-        last_chunk_index=last_chunk_index,
-        backlog=len(chunks)  # Simplified: assume all chunks are "backlog"
+        state=state_str,
+        rows=status.rows,
+        bytes=status.bytes,
+        last_chunk_index=status.last_chunk_index,
+        backlog=status.backlog
     )
 
 
@@ -1087,17 +1111,29 @@ async def get_chunk_snapshots(session_id: str = Query(...)):
     Raises:
         404: If session not found
     """
-    global _chunked_store
+    global _session_manager
 
     logger.debug(f"[RECORD/SNAPSHOTS] Request: session_id={session_id}")
 
-    if not _chunked_store:
-        logger.error(f"[RECORD/SNAPSHOTS] FAILED: No active recording session")
-        raise HTTPException(status_code=404, detail="No active recording session")
+    # Check session manager initialized
+    if not _session_manager:
+        logger.error("[RECORD/SNAPSHOTS] FAILED: SessionManager not initialized")
+        raise HTTPException(status_code=500, detail="SessionManager not initialized")
 
-    chunks = _chunked_store.snapshot_list()
-    logger.debug(f"[RECORD/SNAPSHOTS] Returning {len(chunks)} chunks")
-    return [ChunkMetadata(**chunk) for chunk in chunks]
+    # Get session and validate it exists
+    session = _session_manager.get_session(session_id)
+    if not session:
+        logger.error(f"[RECORD/SNAPSHOTS] FAILED: Session not found: {session_id}")
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+
+    # Get snapshots from session
+    try:
+        chunks = session.get_snapshots()
+        logger.debug(f"[RECORD/SNAPSHOTS] Returning {len(chunks)} chunks for session {session_id}")
+        return [ChunkMetadata(**chunk) for chunk in chunks]
+    except RuntimeError as e:
+        logger.error(f"[RECORD/SNAPSHOTS] FAILED: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/files/{session_id}/{filename}")
@@ -1114,22 +1150,38 @@ async def download_chunk_file(session_id: str, filename: str):
     Raises:
         404: If session or file not found
     """
-    global _chunked_store
+    global _session_manager
 
-    if not _chunked_store:
-        # Allow download even if no active session (for recovery)
-        session_dir = Path(CHUNK_RECORDING_PATH) / session_id
-        if not session_dir.exists():
-            raise HTTPException(status_code=404, detail="Session not found")
-        chunk_path = session_dir / filename
-    else:
-        try:
-            chunk_path = _chunked_store.open_chunk(filename)
-        except FileNotFoundError:
-            raise HTTPException(status_code=404, detail=f"Chunk not found: {filename}")
+    # Try to get chunk from session manager first
+    if _session_manager:
+        session = _session_manager.get_session(session_id)
+        if session:
+            try:
+                chunk_path = session.get_chunk_path(filename)
+                logger.debug(f"[FILES] Serving chunk {filename} from active session {session_id}")
 
+                return FileResponse(
+                    path=str(chunk_path),
+                    media_type="text/csv",
+                    filename=filename
+                )
+            except (RuntimeError, FileNotFoundError) as e:
+                logger.debug(f"[FILES] Chunk not found in active session: {e}")
+                # Fall through to recovery mode below
+
+    # Recovery mode: allow download even if no active session (for stopped sessions)
+    logger.debug(f"[FILES] Attempting recovery mode for session {session_id}")
+    session_dir = Path(CHUNK_RECORDING_PATH) / session_id
+    if not session_dir.exists():
+        logger.error(f"[FILES] Session directory not found: {session_dir}")
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+
+    chunk_path = session_dir / filename
     if not chunk_path.exists():
+        logger.error(f"[FILES] Chunk file not found: {chunk_path}")
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+
+    logger.debug(f"[FILES] Serving chunk {filename} from stopped session {session_id} (recovery mode)")
 
     return FileResponse(
         path=str(chunk_path),
@@ -1279,13 +1331,21 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Clean up resources on shutdown."""
-    global _controller, _recorder
+    global _controller, _recorder, _session_manager
 
     logger.info("Shutting down Q-Sensor API...")
 
-    # Stop recorder
+    # Stop all recording sessions first (most important for data integrity)
+    if _session_manager:
+        logger.info("Shutting down all recording sessions...")
+        try:
+            _session_manager.shutdown_all()
+        except Exception as e:
+            logger.error(f"Error shutting down sessions: {e}", exc_info=True)
+
+    # Stop old-style recorder (if still in use)
     if _recorder and _recorder.is_running():
-        logger.info("Stopping recorder...")
+        logger.info("Stopping old-style recorder...")
         _recorder.stop()
 
     # Disconnect controller

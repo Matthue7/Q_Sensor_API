@@ -463,14 +463,14 @@ class ChunkedDataStore:
         Args:
             session_id: Unique session identifier
             base_path: Parent directory for recordings (e.g., /data/qsensor_recordings)
-            roll_interval_s: Time-based roll interval (15-300s, default 60s)
+            roll_interval_s: Time-based roll interval (1-300s, default 60s)
             target_chunk_mb: Target chunk size in MB (1-5, default 2)
         """
         self._lock = RLock()
         self._session_id = session_id
         self._base_path = Path(base_path)
         self._session_dir = self._base_path / session_id
-        self._roll_interval = max(15.0, min(300.0, roll_interval_s))
+        self._roll_interval = max(1.0, min(300.0, roll_interval_s))
         self._target_bytes = int(target_chunk_mb * 1024 * 1024)
 
         # State
