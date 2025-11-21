@@ -16,6 +16,7 @@ from typing import Optional
 
 from data_store.store import ChunkedDataStore, DataRecorder
 from q_sensor_lib.controller import SensorController
+from q_sensor_lib.models import Reading
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +296,27 @@ class RecordingSession:
                     backlog=0,
                 )
 
+    def inject_sync_marker(self, reading: Reading) -> str:
+        """Inject a sync marker directly into the active recording store.
+
+        Args:
+            reading: Reading instance representing the sync marker
+
+        Returns:
+            ISO timestamp string corresponding to the appended marker
+
+        Raises:
+            RuntimeError: If store is not ready or session not recording
+        """
+        with self._lock:
+            if self._state != SessionState.RECORDING:
+                raise RuntimeError("Session is not recording")
+
+            if not self._store:
+                raise RuntimeError("Store not initialized")
+
+            return self._store.append_marker(reading)
+
     def get_snapshots(self) -> list[dict]:
         """
         Get list of finalized chunks with metadata.
@@ -372,3 +394,9 @@ class RecordingSession:
         """Get error message if session is in ERROR state."""
         with self._lock:
             return self._error
+
+    @property
+    def sensor_id(self) -> str:
+        """Get sensor identifier associated with this session."""
+        with self._lock:
+            return self._controller.sensor_id if self._controller else "unknown"

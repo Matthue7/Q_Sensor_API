@@ -19,6 +19,7 @@ import subprocess
 import threading
 from pathlib import Path
 from threading import RLock
+from datetime import datetime, timezone
 from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -32,7 +33,7 @@ from data_store.session_manager import SessionManager
 from data_store.store import ChunkedDataStore
 from q_sensor_lib import SensorController
 from q_sensor_lib.errors import InvalidConfigValue, MenuTimeout, SerialIOError
-from q_sensor_lib.models import ConnectionState
+from q_sensor_lib.models import ConnectionState, Reading
 
 # =============================================================================
 # Environment Configuration
@@ -205,6 +206,19 @@ class ChunkMetadata(BaseModel):
     rows: int
 
 
+class SyncMarkerRequest(BaseModel):
+    """Request for POST /record/sync-marker."""
+    session_id: str
+    sync_id: str
+    marker_type: Literal["START", "STOP"]
+
+
+class SyncMarkerResponse(BaseModel):
+    """Response for POST /record/sync-marker."""
+    status: str
+    timestamp: str
+
+
 class HealthResponse(BaseModel):
     """Response for GET /instrument/health."""
     connected: bool
@@ -212,6 +226,14 @@ class HealthResponse(BaseModel):
     model: Optional[str]
     firmware: Optional[str]
     disk_free_bytes: Optional[int]
+
+
+class TimeSyncResponse(BaseModel):
+    """Response for GET /api/sync/time."""
+    pi_iso: str
+    pi_unix_ms: int
+    container_version: str
+    schema_version: int
 
 
 # =============================================================================
@@ -1051,6 +1073,58 @@ async def stop_chunked_recording(req: RecordStopRequest):
             raise HTTPException(status_code=500, detail=f"Failed to stop recording: {e}")
 
 
+@app.post("/record/sync-marker", response_model=SyncMarkerResponse)
+async def inject_sync_marker(req: SyncMarkerRequest):
+    """Inject a sync marker into the active recording buffer."""
+    global _session_manager, _lock
+
+    logger.info(f"[RECORD/SYNC-MARKER] Request: session_id={req.session_id}, type={req.marker_type}")
+
+    if not _session_manager:
+        logger.error("[RECORD/SYNC-MARKER] FAILED: SessionManager not initialized")
+        raise HTTPException(status_code=500, detail="SessionManager not initialized")
+
+    with _lock:
+        session = _session_manager.get_session(req.session_id)
+        if not session:
+            logger.error(f"[RECORD/SYNC-MARKER] FAILED: Session not found: {req.session_id}")
+            raise HTTPException(status_code=404, detail=f"Session not found: {req.session_id}")
+
+        if not session.is_recording:
+            logger.error(f"[RECORD/SYNC-MARKER] FAILED: Session not recording (state={session.state.value})")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Session is not recording (state={session.state.value})"
+            )
+
+        # Build marker reading
+        marker_ts = datetime.now(timezone.utc)
+        marker_value = int(req.sync_id[:8], 16) if req.sync_id else 0
+        marker_mode = f"SYNC_{req.marker_type}"
+
+        marker_reading = Reading(
+            ts=marker_ts,
+            sensor_id=session.sensor_id,
+            mode=marker_mode,  # Special marker mode (preserved in CSV)
+            data={
+                "value": marker_value,
+                "TempC": 0.0,
+                "Vin": 0.0,
+            },
+        )
+
+        try:
+            timestamp = session.inject_sync_marker(marker_reading)
+            logger.info(
+                f"[RECORD/SYNC-MARKER] Injected {marker_mode} "
+                f"(sync_id={req.sync_id[:8]}..., sensor={session.sensor_id})"
+            )
+            return SyncMarkerResponse(status="injected", timestamp=timestamp)
+        except Exception as e:
+            logger.error(f"[RECORD/SYNC-MARKER] FAILED to inject marker: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to inject marker: {e}")
+
+
 @app.get("/record/status", response_model=RecordStatusResponse)
 async def get_recording_status(session_id: str = Query(...)):
     """Get current recording session status.
@@ -1295,6 +1369,32 @@ async def register_service():
         "webpage": "/",
         "api": "/docs"
     }
+
+
+# =============================================================================
+# Time Synchronization
+# =============================================================================
+
+@app.get("/api/sync/time", response_model=TimeSyncResponse)
+async def get_sync_time():
+    """Get Pi current time for clock offset measurement.
+
+    Returns Pi time in ISO 8601 and Unix milliseconds format.
+    Used by topside Cockpit to measure clock offset via HTTP round-trip.
+
+    Returns:
+        TimeSyncResponse with pi_iso, pi_unix_ms, container_version, schema_version
+    """
+    now = datetime.now(timezone.utc)
+    pi_iso = now.isoformat()
+    pi_unix_ms = int(now.timestamp() * 1000)
+
+    return TimeSyncResponse(
+        pi_iso=pi_iso,
+        pi_unix_ms=pi_unix_ms,
+        container_version=API_VERSION,
+        schema_version=1
+    )
 
 
 # =============================================================================

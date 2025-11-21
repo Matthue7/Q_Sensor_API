@@ -531,6 +531,19 @@ class ChunkedDataStore:
         for row in rows:
             self._append_row(row)
 
+    def append_marker(self, reading: Reading) -> str:
+        """Append a single sync marker reading.
+
+        Args:
+            reading: Reading instance representing a sync marker
+
+        Returns:
+            ISO 8601 timestamp string of the appended marker
+        """
+        row = reading_to_row(reading)
+        self._append_row(row)
+        return row["timestamp"]
+
     def _append_row(self, row: dict) -> None:
         """Append a single reading row.
 
