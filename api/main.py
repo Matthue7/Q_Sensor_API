@@ -858,6 +858,7 @@ app.add_api_route("/sensor/start", start_acquisition, methods=["POST"])
 app.add_api_route("/sensor/pause", pause_acquisition, methods=["POST"])
 app.add_api_route("/sensor/resume", resume_acquisition, methods=["POST"])
 app.add_api_route("/sensor/stop", stop_acquisition, methods=["POST"])
+app.add_api_route("/sensor/disconnect", disconnect, methods=["POST"])
 
 # Add recording export aliases
 app.add_api_route("/recording/export/csv", export_csv, methods=["GET"])
